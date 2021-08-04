@@ -48,6 +48,8 @@ pub enum Token<'a> {
     Arrow,
     #[token(":")]
     Colon,
+    #[token(";")]
+    SemiColon,
     #[token(",")]
     Comma,
 

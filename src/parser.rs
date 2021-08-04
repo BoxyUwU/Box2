@@ -111,6 +111,8 @@ fn parse_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes, min_bp: u8) -> Opt
         nodes.push_expr(ExprKind::Ident(ident.to_owned()))
     } else if let Some(lit) = tok.next_if_lit() {
         nodes.push_expr(ExprKind::Lit(lit))
+    } else if let Some(_) = tok.peek_if(Token::LBrace) {
+        parse_block_expr(tok, nodes)?
     } else {
         return None;
     };
@@ -131,6 +133,17 @@ fn parse_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes, min_bp: u8) -> Opt
         let rhs = parse_expr(tok, nodes, r_bp)?;
         lhs = nodes.push_expr(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs));
     }
+}
+
+fn parse_block_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
+    tok.next_if(Token::LBrace)?;
+    let mut stmts = vec![];
+    while let None = tok.next_if(Token::RBrace) {
+        let expr = parse_expr(tok, nodes, 0)?;
+        let terminator = tok.next_if(Token::SemiColon).is_some();
+        stmts.push((expr, terminator));
+    }
+    Some(nodes.push_expr(ExprKind::Block(stmts)))
 }
 
 fn parse_fn<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
@@ -159,9 +172,7 @@ fn parse_fn<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
         ret_ty = Some(tok.next_if_ident()?.to_owned());
     }
 
-    tok.next_if(Token::LBrace)?;
-    let body = parse_expr(tok, nodes, 0)?;
-    tok.next_if(Token::RBrace)?;
+    let body = parse_block_expr(tok, nodes)?;
 
     Some(nodes.push_fn(Fn {
         visibility,
@@ -175,6 +186,22 @@ fn parse_fn<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn block_expr() {
+        let mut nodes = Nodes(vec![]);
+        parse_block_expr(&mut Tokenizer::new("{ 10 + 14 - 2; -1; {10} }"), &mut nodes).unwrap();
+        assert_eq!(
+            &nodes.to_string(),
+            r"{
+    (- (+ 10 14) 2);
+    (- 1);
+    {
+    10
+}
+}"
+        );
+    }
 
     #[test]
     fn fn_header() {

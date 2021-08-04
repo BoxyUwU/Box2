@@ -60,6 +60,17 @@ impl std::fmt::Display for Nodes {
                                 print_node(f, nodes, lhs)?;
                                 f.write_str(")")?;
                             }
+                            ExprKind::Block(stmts) => {
+                                f.write_str("{")?;
+                                for &(node, terminator) in &stmts {
+                                    f.write_str("\n    ")?;
+                                    print_node(f, nodes, node)?;
+                                    if terminator {
+                                        f.write_str(";")?;
+                                    }
+                                }
+                                f.write_str("\n}")?;
+                            }
                         }
                     }
 
@@ -80,16 +91,15 @@ impl std::fmt::Display for Nodes {
                             f.write_str(&ty)?;
                             f.write_str(",")?;
                         }
-                        f.write_str(")")?;
+                        f.write_str(") ")?;
 
                         if let Some(ret_ty) = &func.ret_ty {
-                            f.write_str(" -> ")?;
+                            f.write_str("-> ")?;
                             f.write_str(&ret_ty)?;
+                            f.write_str(" ")?;
                         }
 
-                        f.write_str(" {\n    ")?;
                         print_node(f, nodes, func.body)?;
-                        f.write_str("\n}")?;
                     }
 
                     Ok(())
@@ -138,6 +148,7 @@ pub struct Expr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
+    Block(Vec<(NodeId, bool)>),
     BinOp(BinOp, NodeId, NodeId),
     UnOp(UnOp, NodeId),
     Lit(Literal),
@@ -161,6 +172,7 @@ impl ExprKind {
                 Literal::Int(i) => i.to_string(),
             },
             ExprKind::Ident(ident) => ident.to_string(),
+            ExprKind::Block(_) => "".to_string(),
         }
     }
 }
