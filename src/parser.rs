@@ -113,6 +113,8 @@ fn parse_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes, min_bp: u8) -> Opt
         nodes.push_expr(ExprKind::Lit(lit))
     } else if let Some(_) = tok.peek_if(Token::LBrace) {
         parse_block_expr(tok, nodes)?
+    } else if let Some(_) = tok.peek_if(Token::Kw(Kw::Let)) {
+        parse_let_expr(tok, nodes)?
     } else {
         return None;
     };
@@ -133,6 +135,14 @@ fn parse_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes, min_bp: u8) -> Opt
         let rhs = parse_expr(tok, nodes, r_bp)?;
         lhs = nodes.push_expr(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs));
     }
+}
+
+fn parse_let_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
+    tok.next_if(Token::Kw(Kw::Let))?;
+    let name = tok.next_if_ident()?;
+    tok.next_if(Token::Eq)?;
+    let expr = parse_expr(tok, nodes, 0)?;
+    Some(nodes.push_expr(ExprKind::Let(name.to_owned(), expr)))
 }
 
 fn parse_block_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
@@ -186,6 +196,25 @@ fn parse_fn<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn let_expr() {
+        let mut nodes = Nodes(vec![]);
+        parse_let_expr(&mut Tokenizer::new("let foo = 10 + 12"), &mut nodes).unwrap();
+        assert_eq!(&nodes.to_string(), "let foo = (+ 10 12)");
+        parse_let_expr(
+            &mut Tokenizer::new("let foo = { 10 + 12; bar }"),
+            &mut nodes,
+        )
+        .unwrap();
+        assert_eq!(
+            &nodes.to_string(),
+            r"let foo = {
+    (+ 10 12);
+    bar
+}"
+        )
+    }
 
     #[test]
     fn block_expr() {

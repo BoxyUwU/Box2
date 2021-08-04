@@ -71,6 +71,12 @@ impl std::fmt::Display for Nodes {
                                 }
                                 f.write_str("\n}")?;
                             }
+                            ExprKind::Let(name, expr) => {
+                                f.write_str("let ")?;
+                                f.write_str(&name)?;
+                                f.write_str(" = ")?;
+                                print_node(f, nodes, expr)?;
+                            }
                         }
                     }
 
@@ -148,6 +154,7 @@ pub struct Expr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
+    Let(String, NodeId),
     Block(Vec<(NodeId, bool)>),
     BinOp(BinOp, NodeId, NodeId),
     UnOp(UnOp, NodeId),
@@ -173,6 +180,7 @@ impl ExprKind {
             },
             ExprKind::Ident(ident) => ident.to_string(),
             ExprKind::Block(_) => "".to_string(),
+            ExprKind::Let(..) => "".to_string(),
         }
     }
 }
