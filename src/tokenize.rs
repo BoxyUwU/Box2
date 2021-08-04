@@ -98,6 +98,23 @@ impl<'a> Tokenizer<'a> {
     pub fn peek_second(&mut self) -> Option<&Token<'a>> {
         self.lex.peek_second()
     }
+
+    pub fn next_if_bottom(&mut self) -> Option<Token<'a>> {
+        match self.peek() {
+            Some(Token::Literal(_) | Token::Ident(_)) => Some(self.next().unwrap()),
+            _ => None,
+        }
+    }
+
+    pub fn next_if(&mut self, expected: Token<'a>) -> Option<Token<'a>> {
+        match self.peek() {
+            Some(tok) if tok == &expected => {
+                self.next().unwrap();
+                Some(expected)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl<'a> Iterator for Tokenizer<'a> {

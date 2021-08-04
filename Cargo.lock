@@ -3,17 +3,17 @@
 version = 3
 
 [[package]]
-name = "Box2"
-version = "0.1.0"
-dependencies = [
- "logos",
-]
-
-[[package]]
 name = "beef"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bed554bd50246729a1ec158d08aa3235d1b69d94ad120ebe187e28894787e736"
+
+[[package]]
+name = "box"
+version = "0.1.0"
+dependencies = [
+ "logos",
+]
 
 [[package]]
 name = "fnv"
