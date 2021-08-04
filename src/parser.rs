@@ -1,4 +1,4 @@
-use crate::tokenize::{Token, Tokenizer};
+use crate::tokenize::{Kw, Token, Tokenizer};
 
 use crate::ast::*;
 
@@ -102,13 +102,13 @@ fn parse_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes, min_bp: u8) -> Opt
     let mut lhs = if let Some(unop) = tok.next_if_disambig_un_op() {
         let (_, r_bp) = unop.bp();
         let rhs = parse_expr(tok, nodes, r_bp)?;
-        nodes.push_node(ExprKind::UnOp(unop, rhs))
+        nodes.push_expr(ExprKind::UnOp(unop, rhs))
     } else if let Some(_) = tok.next_if(Token::LParen) {
         let inner = parse_expr(tok, nodes, 0)?;
         tok.next_if(Token::RParen)?;
         inner
     } else {
-        parse_bottom(tok, nodes)?
+        parse_expr_bottom(tok, nodes)?
     };
 
     loop {
@@ -125,11 +125,11 @@ fn parse_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes, min_bp: u8) -> Opt
         tok.next().unwrap();
 
         let rhs = parse_expr(tok, nodes, r_bp)?;
-        lhs = nodes.push_node(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs));
+        lhs = nodes.push_expr(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs));
     }
 }
 
-fn parse_bottom<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
+fn parse_expr_bottom<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
     use crate::tokenize::Literal;
 
     let bottom = match tok.next_if_bottom()? {
@@ -139,13 +139,120 @@ fn parse_bottom<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId
         _ => return None,
     };
 
-    Some(nodes.push_node(ExprKind::Bottom(bottom)))
+    Some(nodes.push_expr(ExprKind::Bottom(bottom)))
+}
+
+fn parse_fn<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
+    // (pub)? fn ( (ident: ty),* ) (-> ty)? { expr }
+
+    let visibility = tok.next_if(Token::Kw(Kw::Pub)).map(|_| Visibility::Pub);
+    tok.next_if(Token::Kw(Kw::Fn))?;
+    let name = tok.next_if_ident()?.to_owned();
+
+    tok.next_if(Token::LParen)?;
+    let mut params = Vec::new();
+    while let Some(ident) = tok.next_if_ident() {
+        tok.next_if(Token::Colon)?;
+        let ty = tok.next_if_ident()?;
+        params.push((ident.to_owned(), ty.to_owned()));
+
+        match tok.next_if(Token::Comma) {
+            Some(_) => continue,
+            None => break,
+        }
+    }
+    tok.next_if(Token::RParen)?;
+
+    let mut ret_ty = None;
+    if let Some(_) = tok.next_if(Token::Arrow) {
+        ret_ty = Some(tok.next_if_ident()?.to_owned());
+    }
+
+    tok.next_if(Token::LBrace)?;
+    let body = parse_expr(tok, nodes, 0)?;
+    tok.next_if(Token::RBrace)?;
+
+    Some(nodes.push_fn(Fn {
+        visibility,
+        name,
+        params,
+        ret_ty,
+        body,
+    }))
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::ast::*;
+
+    #[test]
+    fn fn_header() {
+        let mut nodes = Nodes(vec![]);
+
+        // succeeds
+        parse_fn(&mut Tokenizer::new("fn foo() { 1 }"), &mut nodes).unwrap();
+        assert_eq!(
+            &nodes.to_string(),
+            r"fn foo() {
+    1
+}"
+        );
+        parse_fn(&mut Tokenizer::new("fn foo(foo: Bar) { 1 }"), &mut nodes).unwrap();
+        assert_eq!(
+            &nodes.to_string(),
+            r"fn foo(foo: Bar,) {
+    1
+}"
+        );
+        parse_fn(&mut Tokenizer::new("fn foo() -> RetTy { 1 }"), &mut nodes).unwrap();
+        assert_eq!(
+            &nodes.to_string(),
+            r"fn foo() -> RetTy {
+    1
+}"
+        );
+        parse_fn(
+            &mut Tokenizer::new("fn foo(foo: Bar) -> RetTy { 1 }"),
+            &mut nodes,
+        )
+        .unwrap();
+        assert_eq!(
+            &nodes.to_string(),
+            r"fn foo(foo: Bar,) -> RetTy {
+    1
+}"
+        );
+        parse_fn(&mut Tokenizer::new("fn foo() -> RetTy { 1 }"), &mut nodes).unwrap();
+        assert_eq!(
+            &nodes.to_string(),
+            r"fn foo() -> RetTy {
+    1
+}"
+        );
+        parse_fn(
+            &mut Tokenizer::new("fn foo(foo: Bar,baz: Bar,) { 1 }"),
+            &mut nodes,
+        )
+        .unwrap();
+        assert_eq!(
+            &nodes.to_string(),
+            r"fn foo(foo: Bar,baz: Bar,) {
+    1
+}"
+        );
+
+        // fails
+        parse_fn(&mut Tokenizer::new("pub pub fn foo() { 1 }"), &mut nodes).map(|_| panic!(""));
+        parse_fn(&mut Tokenizer::new("foo() { 1 }"), &mut nodes).map(|_| panic!(""));
+        parse_fn(&mut Tokenizer::new("fn foo(foo:: Bar) { 1 }"), &mut nodes).map(|_| panic!(""));
+        parse_fn(&mut Tokenizer::new("fn foo() -> Ty Ty { 1 }"), &mut nodes).map(|_| panic!(""));
+        parse_fn(&mut Tokenizer::new("fn foo() -> { 1 }"), &mut nodes).map(|_| panic!(""));
+        parse_fn(
+            &mut Tokenizer::new("fn foo(Foo: Bar,,) -> { 1 }"),
+            &mut nodes,
+        )
+        .map(|_| panic!(""));
+    }
 
     #[test]
     fn braces() {
@@ -178,7 +285,7 @@ mod test {
     }
 
     #[test]
-    fn disambig() {
+    fn disambig_op() {
         let mut nodes = Nodes(vec![]);
         parse_expr(&mut Tokenizer::new("1 - 2"), &mut nodes, 0).unwrap();
         assert_eq!(&nodes.to_string(), "(- 1 2)");

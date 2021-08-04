@@ -17,6 +17,12 @@ impl Literal {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Kw {
+    Fn,
+    Pub,
+}
+
 #[derive(Logos, Copy, Clone, Debug, PartialEq)]
 pub enum Token<'a> {
     #[regex("[a-zA-Z]+", |lex| lex.slice())]
@@ -34,10 +40,25 @@ pub enum Token<'a> {
     #[token("/")]
     FwdSlash,
 
+    #[token("fn", |_| Kw::Fn)]
+    #[token("pub", |_| Kw::Pub)]
+    Kw(Kw),
+
+    #[token("->")]
+    Arrow,
+    #[token(":")]
+    Colon,
+    #[token(",")]
+    Comma,
+
     #[token("(")]
     LParen,
     #[token(")")]
     RParen,
+    #[token("{")]
+    LBrace,
+    #[token("}")]
+    RBrace,
 
     #[error]
     #[regex(r"[ \t\n\f]+", logos::skip)]
@@ -106,12 +127,39 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
+    #[must_use]
     pub fn next_if(&mut self, expected: Token<'a>) -> Option<Token<'a>> {
         match self.peek() {
             Some(tok) if tok == &expected => {
                 self.next().unwrap();
                 Some(expected)
             }
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn peek_if(&mut self, expected: Token<'a>) -> Option<Token<'a>> {
+        match self.peek() {
+            Some(tok) if tok == &expected => Some(expected),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn next_if_ident(&mut self) -> Option<&'a str> {
+        match self.peek() {
+            Some(Token::Ident(_)) => {
+                Some(unwrap_matches!(self.next(), Some(Token::Ident(foo)) => foo))
+            }
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn peek_if_ident(&mut self) -> Option<&'a str> {
+        match self.peek() {
+            Some(Token::Ident(ident)) => Some(ident),
             _ => None,
         }
     }

@@ -1,13 +1,22 @@
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct NodeId(pub usize);
-
 #[derive(Debug)]
-pub struct Nodes(pub Vec<Expr>);
+pub struct Nodes(pub Vec<Node>);
 
 impl Nodes {
-    pub fn push_node(&mut self, kind: ExprKind) -> NodeId {
+    pub fn push_expr(&mut self, kind: ExprKind) -> NodeId {
         let id = NodeId(self.0.len());
-        self.0.push(Expr { id, kind });
+        self.0.push(Node {
+            id,
+            kind: NodeKind::Expr(Expr { id, kind }),
+        });
+        id
+    }
+
+    pub fn push_fn(&mut self, func: Fn) -> NodeId {
+        let id = NodeId(self.0.len());
+        self.0.push(Node {
+            id,
+            kind: NodeKind::Fn(func),
+        });
         id
     }
 }
@@ -21,30 +30,63 @@ impl std::fmt::Display for Nodes {
                     nodes: &Nodes,
                     node: NodeId,
                 ) -> std::fmt::Result {
-                    let kind = (&nodes.0[node.0]).kind.clone();
-                    let op_str = &kind.op_string();
+                    let node = &(&nodes.0[node.0]).kind;
+                    if let NodeKind::Expr(Expr { kind, .. }) = node {
+                        let kind = kind.clone();
+                        let op_str = &kind.op_string();
 
-                    match kind {
-                        ExprKind::Bottom(_) => {
-                            f.write_str(op_str)?;
-                        }
-                        ExprKind::BinOp(_, lhs, rhs) => {
-                            f.write_str("(")?;
-                            f.write_str(op_str)?;
-                            f.write_str(" ")?;
-                            print_node(f, nodes, lhs)?;
-                            f.write_str(" ")?;
-                            print_node(f, nodes, rhs)?;
-                            f.write_str(")")?;
-                        }
-                        ExprKind::UnOp(_, lhs) => {
-                            f.write_str("(")?;
-                            f.write_str(op_str)?;
-                            f.write_str(" ")?;
-                            print_node(f, nodes, lhs)?;
-                            f.write_str(")")?;
+                        match kind {
+                            ExprKind::Bottom(_) => {
+                                f.write_str(op_str)?;
+                            }
+                            ExprKind::BinOp(_, lhs, rhs) => {
+                                f.write_str("(")?;
+                                f.write_str(op_str)?;
+                                f.write_str(" ")?;
+                                print_node(f, nodes, lhs)?;
+                                f.write_str(" ")?;
+                                print_node(f, nodes, rhs)?;
+                                f.write_str(")")?;
+                            }
+                            ExprKind::UnOp(_, lhs) => {
+                                f.write_str("(")?;
+                                f.write_str(op_str)?;
+                                f.write_str(" ")?;
+                                print_node(f, nodes, lhs)?;
+                                f.write_str(")")?;
+                            }
                         }
                     }
+
+                    if let NodeKind::Fn(func) = node {
+                        if let Some(visibility) = &func.visibility {
+                            match visibility {
+                                Visibility::Pub => {
+                                    f.write_str("pub ")?;
+                                }
+                            }
+                        };
+                        f.write_str("fn ")?;
+                        f.write_str(&func.name)?;
+                        f.write_str("(")?;
+                        for (param, ty) in &func.params {
+                            f.write_str(&param)?;
+                            f.write_str(": ")?;
+                            f.write_str(&ty)?;
+                            f.write_str(",")?;
+                        }
+                        f.write_str(")")?;
+
+                        if let Some(ret_ty) = &func.ret_ty {
+                            f.write_str(" -> ")?;
+                            f.write_str(&ret_ty)?;
+                        }
+
+                        f.write_str(" {\n    ")?;
+                        print_node(f, nodes, func.body)?;
+                        f.write_str("\n}")?;
+                    }
+
                     Ok(())
                 }
                 print_node(f, self, NodeId(self.0.len() - 1))
@@ -52,6 +94,35 @@ impl std::fmt::Display for Nodes {
             None => Ok(()),
         }
     }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct NodeId(pub usize);
+
+#[derive(Debug)]
+pub struct Node {
+    id: NodeId,
+    kind: NodeKind,
+}
+
+#[derive(Debug)]
+pub enum NodeKind {
+    Expr(Expr),
+    Fn(Fn),
+}
+
+#[derive(Debug)]
+pub enum Visibility {
+    Pub,
+}
+
+#[derive(Debug)]
+pub struct Fn {
+    pub visibility: Option<Visibility>,
+    pub name: String,
+    pub params: Vec<(String, String)>,
+    pub ret_ty: Option<String>,
+    pub body: NodeId,
 }
 
 #[derive(Debug)]
