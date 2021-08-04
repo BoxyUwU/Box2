@@ -107,8 +107,12 @@ fn parse_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes, min_bp: u8) -> Opt
         let inner = parse_expr(tok, nodes, 0)?;
         tok.next_if(Token::RParen)?;
         inner
+    } else if let Some(ident) = tok.next_if_ident() {
+        nodes.push_expr(ExprKind::Ident(ident.to_owned()))
+    } else if let Some(lit) = tok.next_if_lit() {
+        nodes.push_expr(ExprKind::Lit(lit))
     } else {
-        parse_expr_bottom(tok, nodes)?
+        return None;
     };
 
     loop {
@@ -127,19 +131,6 @@ fn parse_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes, min_bp: u8) -> Opt
         let rhs = parse_expr(tok, nodes, r_bp)?;
         lhs = nodes.push_expr(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs));
     }
-}
-
-fn parse_expr_bottom<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
-    use crate::tokenize::Literal;
-
-    let bottom = match tok.next_if_bottom()? {
-        Token::Literal(Literal::Float(f)) => Bottom::Float(f),
-        Token::Literal(Literal::Int(i)) => Bottom::Int(i),
-        Token::Ident(ident) => Bottom::Ident(ident.to_owned()),
-        _ => return None,
-    };
-
-    Some(nodes.push_expr(ExprKind::Bottom(bottom)))
 }
 
 fn parse_fn<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {

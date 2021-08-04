@@ -120,13 +120,6 @@ impl<'a> Tokenizer<'a> {
         self.lex.peek_second()
     }
 
-    pub fn next_if_bottom(&mut self) -> Option<Token<'a>> {
-        match self.peek() {
-            Some(Token::Literal(_) | Token::Ident(_)) => Some(self.next().unwrap()),
-            _ => None,
-        }
-    }
-
     #[must_use]
     pub fn next_if(&mut self, expected: Token<'a>) -> Option<Token<'a>> {
         match self.peek() {
@@ -160,6 +153,16 @@ impl<'a> Tokenizer<'a> {
     pub fn peek_if_ident(&mut self) -> Option<&'a str> {
         match self.peek() {
             Some(Token::Ident(ident)) => Some(ident),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn next_if_lit(&mut self) -> Option<Literal> {
+        match self.peek() {
+            Some(Token::Literal(_)) => {
+                unwrap_matches!(self.next(), Some(Token::Literal(l)) => Some(l))
+            }
             _ => None,
         }
     }

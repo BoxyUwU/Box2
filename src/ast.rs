@@ -1,3 +1,5 @@
+use crate::tokenize::Literal;
+
 #[derive(Debug)]
 pub struct Nodes(pub Vec<Node>);
 
@@ -36,7 +38,10 @@ impl std::fmt::Display for Nodes {
                         let op_str = &kind.op_string();
 
                         match kind {
-                            ExprKind::Bottom(_) => {
+                            ExprKind::Lit(_) => {
+                                f.write_str(op_str)?;
+                            }
+                            ExprKind::Ident(_) => {
                                 f.write_str(op_str)?;
                             }
                             ExprKind::BinOp(_, lhs, rhs) => {
@@ -135,7 +140,8 @@ pub struct Expr {
 pub enum ExprKind {
     BinOp(BinOp, NodeId, NodeId),
     UnOp(UnOp, NodeId),
-    Bottom(Bottom),
+    Lit(Literal),
+    Ident(String),
 }
 
 impl ExprKind {
@@ -150,11 +156,11 @@ impl ExprKind {
             ExprKind::UnOp(op, _) => match op {
                 UnOp::Neg => "-".into(),
             },
-            ExprKind::Bottom(bottom) => match bottom {
-                Bottom::Float(f) => f.to_string(),
-                Bottom::Int(i) => i.to_string(),
-                Bottom::Ident(ident) => ident.to_string(),
+            ExprKind::Lit(l) => match l {
+                Literal::Float(f) => f.to_string(),
+                Literal::Int(i) => i.to_string(),
             },
+            ExprKind::Ident(ident) => ident.to_string(),
         }
     }
 }
