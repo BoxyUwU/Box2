@@ -4,6 +4,10 @@ use crate::tokenize::Literal;
 pub struct Nodes(pub Vec<Node>);
 
 impl Nodes {
+    pub fn expr(&self, id: NodeId) -> &Expr {
+        unwrap_matches!(&self.0[id.0].kind, NodeKind::Expr(e) => e)
+    }
+
     pub fn push_expr(&mut self, kind: ExprKind) -> NodeId {
         let id = NodeId(self.0.len());
         self.0.push(Node {
@@ -117,13 +121,13 @@ impl std::fmt::Display for Nodes {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, Hash, PartialEq, Eq, Debug)]
 pub struct NodeId(pub usize);
 
 #[derive(Debug)]
 pub struct Node {
-    id: NodeId,
-    kind: NodeKind,
+    pub id: NodeId,
+    pub kind: NodeKind,
 }
 
 #[derive(Debug)]

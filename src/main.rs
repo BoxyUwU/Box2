@@ -15,6 +15,7 @@ macro_rules! unwrap_matches {
 
 mod ast;
 mod parser;
+mod resolve;
 mod tokenize;
 
 fn main() {

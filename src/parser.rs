@@ -145,7 +145,7 @@ fn parse_let_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<Node
     Some(nodes.push_expr(ExprKind::Let(name.to_owned(), expr)))
 }
 
-fn parse_block_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
+pub fn parse_block_expr<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Option<NodeId> {
     tok.next_if(Token::LBrace)?;
     let mut stmts = vec![];
     while let None = tok.next_if(Token::RBrace) {
