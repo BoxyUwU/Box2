@@ -8,6 +8,10 @@ impl Nodes {
         unwrap_matches!(&self.0[id.0].kind, NodeKind::Expr(e) => e)
     }
 
+    pub fn type_def(&self, id: NodeId) -> &TypeDef {
+        unwrap_matches!(&self.0[id.0].kind, NodeKind::TypeDef(def) => def)
+    }
+
     pub fn push_expr(&mut self, kind: ExprKind) -> NodeId {
         let id = NodeId(self.0.len());
         self.0.push(Node {
@@ -22,6 +26,33 @@ impl Nodes {
         self.0.push(Node {
             id,
             kind: NodeKind::Fn(func),
+        });
+        id
+    }
+
+    pub fn push_variant_def(&mut self, def: VariantDef) -> NodeId {
+        let id = NodeId(self.0.len());
+        self.0.push(Node {
+            id,
+            kind: NodeKind::VariantDef(def),
+        });
+        id
+    }
+
+    pub fn push_field_def(&mut self, def: FieldDef) -> NodeId {
+        let id = NodeId(self.0.len());
+        self.0.push(Node {
+            id,
+            kind: NodeKind::FieldDef(def),
+        });
+        id
+    }
+
+    pub fn push_type_def(&mut self, def: TypeDef) -> NodeId {
+        let id = NodeId(self.0.len());
+        self.0.push(Node {
+            id,
+            kind: NodeKind::TypeDef(def),
         });
         id
     }
@@ -134,11 +165,36 @@ pub struct Node {
 pub enum NodeKind {
     Expr(Expr),
     Fn(Fn),
+    TypeDef(TypeDef),
+    VariantDef(VariantDef),
+    FieldDef(FieldDef),
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Visibility {
+    Pub,
 }
 
 #[derive(Debug)]
-pub enum Visibility {
-    Pub,
+pub struct TypeDef {
+    pub visibility: Option<Visibility>,
+    pub name: Option<String>,
+    pub variants: Vec<NodeId>,
+}
+
+#[derive(Debug)]
+pub struct VariantDef {
+    pub visibility: Option<Visibility>,
+    pub name: Option<String>,
+    pub field_defs: Vec<NodeId>,
+    pub type_defs: Vec<NodeId>,
+}
+
+#[derive(Debug)]
+pub struct FieldDef {
+    pub visibility: Option<Visibility>,
+    pub name: String,
+    pub ty: NodeId,
 }
 
 #[derive(Debug)]

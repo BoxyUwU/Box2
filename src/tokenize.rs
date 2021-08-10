@@ -22,11 +22,12 @@ pub enum Kw {
     Let,
     Fn,
     Pub,
+    Type,
 }
 
 #[derive(Logos, Copy, Clone, Debug, PartialEq)]
 pub enum Token<'a> {
-    #[regex("[a-zA-Z]+", |lex| lex.slice())]
+    #[regex("[a-zA-Z_-]+", |lex| lex.slice())]
     Ident(&'a str),
     #[regex("[0-9]+", Literal::int_from_lex)]
     #[regex(r"[0-9]+\.[0-9]+", Literal::float_from_lex)]
@@ -44,8 +45,11 @@ pub enum Token<'a> {
     #[token("let", |_| Kw::Let)]
     #[token("fn", |_| Kw::Fn)]
     #[token("pub", |_| Kw::Pub)]
+    #[token("type", |_| Kw::Type)]
     Kw(Kw),
 
+    #[token("|")]
+    UpLine,
     #[token("->")]
     Arrow,
     #[token(":")]
