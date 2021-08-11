@@ -56,6 +56,15 @@ impl Nodes {
         });
         id
     }
+
+    pub fn push_mod_def(&mut self, def: Module) -> NodeId {
+        let id = NodeId(self.0.len());
+        self.0.push(Node {
+            id,
+            kind: NodeKind::Mod(def),
+        });
+        id
+    }
 }
 
 impl std::fmt::Display for Nodes {
@@ -168,11 +177,19 @@ pub enum NodeKind {
     TypeDef(TypeDef),
     VariantDef(VariantDef),
     FieldDef(FieldDef),
+    Mod(Module),
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum Visibility {
     Pub,
+}
+
+#[derive(Debug)]
+pub struct Module {
+    pub visibility: Option<Visibility>,
+    pub name: String,
+    pub items: Vec<NodeId>,
 }
 
 #[derive(Debug)]

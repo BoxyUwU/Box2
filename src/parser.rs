@@ -105,6 +105,7 @@ impl<'a> Tokenizer<'a> {
 impl Kw {
     fn format_found(&self) -> String {
         match self {
+            Kw::Mod => "mod".into(),
             Kw::Let => "let".into(),
             Kw::Fn => "fn".into(),
             Kw::Pub => "pub".into(),
@@ -412,7 +413,6 @@ fn parse_fields<'a>(
                 nodes.push_expr(ExprKind::Ident(ty.to_string()))
             }
             Some((tok, span)) => {
-                dbg!("weh");
                 return Err(diag_expected_bound("type", *tok, span.clone()));
             }
             _ => return Err(Diagnostic::error()),
@@ -436,9 +436,104 @@ fn parse_fields<'a>(
     })
 }
 
+fn parse_mod<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Result<NodeId, Diagnostic<usize>> {
+    // $(pub)? mod IDENT { $(i:item_def)* }
+    let visibility = tok
+        .next_if(Token::Kw(Kw::Pub))
+        .ok()
+        .map(|_| Visibility::Pub);
+    tok.next_if(Token::Kw(Kw::Mod))
+        .map_err(|(tok, sp)| diag_expected_bound("mod", tok, sp))?;
+    let name = tok
+        .next_if_ident()
+        .map_err(|(tok, sp)| diag_expected_bound("IDENTIFER", tok, sp))?;
+
+    tok.next_if(Token::LBrace)
+        .map_err(|(tok, sp)| diag_expected_bound("{", tok, sp))?;
+
+    let mut items = Vec::new();
+    while let Err(_) = tok.next_if(Token::RBrace) {
+        let peeked = match tok.peek_if(Token::Kw(Kw::Pub)) {
+            Ok(_) => tok.peek_second(),
+            Err(_) => tok.peek(),
+        }
+        .ok_or_else(|| Diagnostic::error().with_message("unexpected end of file"))?;
+
+        let item_node_id = match &peeked.0 {
+            Token::Kw(Kw::Mod) => parse_mod(tok, nodes)?,
+            Token::Kw(Kw::Type) => parse_type_def(tok, nodes, None)?,
+            Token::Kw(Kw::Fn) => parse_fn(tok, nodes)?,
+            _ => {
+                return Err(Diagnostic::error()
+                    .with_message("non-item in module")
+                    .with_labels(vec![Label::primary(0, peeked.1.clone())]))
+            }
+        };
+        items.push(item_node_id);
+    }
+
+    Ok(nodes.push_mod_def(Module {
+        visibility,
+        name: name.0.into(),
+        items,
+    }))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn mod_defs_valid() {
+        let mut nodes = Nodes(vec![]);
+        let valid_code = [
+            "mod Foo {}",
+            "pub mod Foo {}",
+            "mod Foo { 
+                fn bar() { let _ = 10; } 
+            }",
+            "mod Foo { 
+                fn bar() { let _ = 10; } 
+                pub fn baz() { let _ = 10; }
+            }",
+            "mod Foo {
+                type Bar {
+                    field: Blah,
+                }
+                fn bar() { let _ = 10; } 
+                pub fn baz() { let _ = 10; }
+            }",
+            "mod Foo {
+                mod Bar {
+                    type Foo {}
+                }
+            }",
+        ];
+        for code in valid_code {
+            parse_mod(&mut Tokenizer::new(code), &mut nodes).unwrap();
+        }
+    }
+
+    #[test]
+    fn mod_defs_invalid() {
+        let mut nodes = Nodes(vec![]);
+        let invalid_code = [
+            "pub pub Foo {}",
+            "mod {}",
+            "mod Foo {
+                pub pub fn foo() { let _ = 10; }
+            }",
+            "mod Foo {
+                fn foo(,) { let _ = 10; }
+            }",
+            "mod Foo {
+                type {}
+            }",
+        ];
+        for code in invalid_code {
+            parse_mod(&mut Tokenizer::new(code), &mut nodes).unwrap_err();
+        }
+    }
 
     #[test]
     fn type_defs_valid() {
@@ -604,16 +699,16 @@ mod test {
         );
 
         // fails
-        parse_fn(&mut Tokenizer::new("pub pub fn foo() { 1 }"), &mut nodes).map(|_| panic!(""));
-        parse_fn(&mut Tokenizer::new("foo() { 1 }"), &mut nodes).map(|_| panic!(""));
-        parse_fn(&mut Tokenizer::new("fn foo(foo:: Bar) { 1 }"), &mut nodes).map(|_| panic!(""));
-        parse_fn(&mut Tokenizer::new("fn foo() -> Ty Ty { 1 }"), &mut nodes).map(|_| panic!(""));
-        parse_fn(&mut Tokenizer::new("fn foo() -> { 1 }"), &mut nodes).map(|_| panic!(""));
+        parse_fn(&mut Tokenizer::new("pub pub fn foo() { 1 }"), &mut nodes).unwrap_err();
+        parse_fn(&mut Tokenizer::new("foo() { 1 }"), &mut nodes).unwrap_err();
+        parse_fn(&mut Tokenizer::new("fn foo(foo:: Bar) { 1 }"), &mut nodes).unwrap_err();
+        parse_fn(&mut Tokenizer::new("fn foo() -> Ty Ty { 1 }"), &mut nodes).unwrap_err();
+        parse_fn(&mut Tokenizer::new("fn foo() -> { 1 }"), &mut nodes).unwrap_err();
         parse_fn(
             &mut Tokenizer::new("fn foo(Foo: Bar,,) -> { 1 }"),
             &mut nodes,
         )
-        .map(|_| panic!(""));
+        .unwrap_err();
     }
 
     #[test]

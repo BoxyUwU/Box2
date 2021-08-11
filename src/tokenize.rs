@@ -19,6 +19,7 @@ impl Literal {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Kw {
+    Mod,
     Let,
     Fn,
     Pub,
@@ -42,6 +43,7 @@ pub enum Token<'a> {
     #[token("/")]
     FwdSlash,
 
+    #[token("mod", |_| Kw::Mod)]
     #[token("let", |_| Kw::Let)]
     #[token("fn", |_| Kw::Fn)]
     #[token("pub", |_| Kw::Pub)]
