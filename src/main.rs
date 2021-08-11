@@ -28,15 +28,27 @@ mod resolve;
 mod tokenize;
 
 fn main() {
-    let mut files = SimpleFiles::new();
-    let file = r"
-    fn foo(,,) { let awd = 10; }
-        ";
-    let file_id = files.add("main.box", file);
-    let diagnostic =
-        parser::parse_fn(&mut tokenize::Tokenizer::new(file), &mut ast::Nodes(vec![])).unwrap_err();
-
-    let writer = StandardStream::stderr(ColorChoice::Always);
-    let config = term::Config::default();
-    term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
+    let invalid_code = [
+        "pub pub Foo {}",
+        "mod {}",
+        "mod Foo {
+            pub pub fn foo() { let _ = 10; }
+        }",
+        "mod Foo {
+            fn foo(,) { let _ = 10; }
+        }",
+        "mod Foo {
+            type {}
+        }",
+    ];
+    for code in invalid_code {
+        let mut nodes = ast::Nodes(vec![]);
+        let mut files = SimpleFiles::new();
+        files.add("main.box", code);
+        let diagnostic =
+            parser::parse_mod(&mut tokenize::Tokenizer::new(code), &mut nodes).unwrap_err();
+        let writer = StandardStream::stderr(ColorChoice::Always);
+        let config = term::Config::default();
+        term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
+    }
 }

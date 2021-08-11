@@ -436,7 +436,10 @@ fn parse_fields<'a>(
     })
 }
 
-fn parse_mod<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Result<NodeId, Diagnostic<usize>> {
+pub fn parse_mod<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &mut Nodes,
+) -> Result<NodeId, Diagnostic<usize>> {
     // $(pub)? mod IDENT { $(i:item_def)* }
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
