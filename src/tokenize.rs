@@ -1,5 +1,5 @@
 use logos::Logos;
-use std::str::FromStr;
+use std::{ops::Range, str::FromStr};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Literal {
@@ -111,77 +111,84 @@ impl<I: Iterator> PeekableTwo<I> {
     }
 }
 
+type Span = Range<usize>;
 pub struct Tokenizer<'a> {
-    lex: PeekableTwo<logos::Lexer<'a, Token<'a>>>,
+    lex: PeekableTwo<logos::SpannedIter<'a, Token<'a>>>,
 }
 
 impl<'a> Tokenizer<'a> {
     pub fn new(src: &'a str) -> Self {
         Self {
-            lex: PeekableTwo::new(Token::lexer(src)),
+            lex: PeekableTwo::new(Token::lexer(src).spanned()),
         }
     }
 
-    pub fn peek(&mut self) -> Option<&Token<'a>> {
+    pub fn peek(&mut self) -> Option<&(Token<'a>, Span)> {
         self.lex.peek()
     }
 
-    pub fn peek_second(&mut self) -> Option<&Token<'a>> {
+    pub fn peek_second(&mut self) -> Option<&(Token<'a>, Span)> {
         self.lex.peek_second()
     }
 
     #[must_use]
-    pub fn next_if(&mut self, expected: Token<'a>) -> Option<Token<'a>> {
+    pub fn next_if(&mut self, expected: Token<'a>) -> Result<(Token<'a>, Span), (Token<'a>, Span)> {
         match self.peek() {
-            Some(tok) if tok == &expected => {
+            Some((tok, span)) if tok == &expected => {
+                let span = span.clone();
                 self.next().unwrap();
-                Some(expected)
+                Ok((expected, span))
             }
-            _ => None,
+            Some(r) => Err(r.clone()),
+            _ => Err((Token::Error, 0..0)),
         }
     }
 
     #[must_use]
-    pub fn peek_if(&mut self, expected: Token<'a>) -> Option<Token<'a>> {
+    pub fn peek_if(&mut self, expected: Token<'a>) -> Result<(Token<'a>, Span), (Token<'a>, Span)> {
         match self.peek() {
-            Some(tok) if tok == &expected => Some(expected),
-            _ => None,
+            Some((tok, span)) if tok == &expected => Ok((expected, span.clone())),
+            Some(r) => Err(r.clone()),
+            _ => Err((Token::Error, 0..0)),
         }
     }
 
     #[must_use]
-    pub fn next_if_ident(&mut self) -> Option<&'a str> {
+    pub fn next_if_ident(&mut self) -> Result<(&'a str, Span), (Token<'a>, Span)> {
         match self.peek() {
-            Some(Token::Ident(_)) => {
-                Some(unwrap_matches!(self.next(), Some(Token::Ident(foo)) => foo))
+            Some((Token::Ident(_), _)) => {
+                Ok(unwrap_matches!(self.next(), Some((Token::Ident(ident), span)) => (ident, span)))
             }
-            _ => None,
+            Some(r) => Err(r.clone()),
+            _ => Err((Token::Error, 0..0)),
         }
     }
 
     #[must_use]
-    pub fn peek_if_ident(&mut self) -> Option<&'a str> {
+    pub fn peek_if_ident(&mut self) -> Result<(&'a str, Span), (Token<'a>, Span)> {
         match self.peek() {
-            Some(Token::Ident(ident)) => Some(ident),
-            _ => None,
+            Some((Token::Ident(ident), span)) => Ok((ident, span.clone())),
+            Some(r) => Err(r.clone()),
+            _ => Err((Token::Error, 0..0)),
         }
     }
 
     #[must_use]
-    pub fn next_if_lit(&mut self) -> Option<Literal> {
+    pub fn next_if_lit(&mut self) -> Result<(Literal, Span), (Token<'a>, Span)> {
         match self.peek() {
-            Some(Token::Literal(_)) => {
-                unwrap_matches!(self.next(), Some(Token::Literal(l)) => Some(l))
+            Some((Token::Literal(_), _)) => {
+                unwrap_matches!(self.next(), Some((Token::Literal(l), span)) => Ok((l, span)))
             }
-            _ => None,
+            Some(r) => Err(r.clone()),
+            _ => Err((Token::Error, 0..0)),
         }
     }
 }
 
 impl<'a> Iterator for Tokenizer<'a> {
-    type Item = Token<'a>;
+    type Item = (Token<'a>, Span);
 
-    fn next(&mut self) -> Option<Token<'a>> {
+    fn next(&mut self) -> Option<(Token<'a>, Span)> {
         self.lex.next()
     }
 }
