@@ -29,6 +29,30 @@ impl<'ast> Resolver<'ast> {
         ret
     }
 
+    fn resolve_mod(&mut self, module: &Module) {
+        use std::iter::FromIterator;
+        let bindings = HashMap::from_iter(module.items.iter().flat_map(|&id| {
+            let node = &self.nodes.0[id.0];
+            Some(match &node.kind {
+                NodeKind::Fn(func) => (func.name.clone(), id),
+                NodeKind::TypeDef(ty_def) => (ty_def.name.clone(), id),
+                _ => return None,
+            })
+        }));
+
+        self.with_rib(Rib { bindings }, |this| {
+            for item_id in module.items.iter() {
+                let node = &this.nodes.0[item_id.0];
+                match &node.kind {
+                    NodeKind::Fn(_) => this.resolve_fn(node),
+                    NodeKind::Mod(module) => this.resolve_mod(module),
+                    NodeKind::TypeDef(_) => this.resolve_type_def(node),
+                    _ => unreachable!(),
+                }
+            }
+        })
+    }
+
     fn resolve_type_def(&mut self, node: &Node) {
         let ty_def = unwrap_matches!(&node.kind, NodeKind::TypeDef(ty) => ty);
 
@@ -127,7 +151,7 @@ mod test {
     #[test]
     fn resolve_type_def() {
         let mut nodes = Nodes(vec![]);
-        let root = crate::parser::parse_type_def(
+        let root = crate::parser::parse_crate(
             &mut Tokenizer::new(
                 "type Foo { 
                     field: type {}, 
@@ -135,14 +159,15 @@ mod test {
                 }",
             ),
             &mut nodes,
-            None,
         )
         .unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_type_def(&nodes.0[root.0]);
+        resolver.resolve_mod(nodes.mod_def(root));
 
-        let ty_def = nodes.type_def(root);
+        let root_mod = nodes.mod_def(root);
+
+        let ty_def = nodes.type_def(root_mod.items[0]);
         let variant_def = nodes.variant_def(ty_def.variants[0]);
 
         let anon_ty_id = variant_def.type_defs[0];

@@ -20,6 +20,10 @@ impl Nodes {
         unwrap_matches!(&self.0[id.0].kind, NodeKind::FieldDef(def) => def)
     }
 
+    pub fn mod_def(&self, id: NodeId) -> &Module {
+        unwrap_matches!(&self.0[id.0].kind, NodeKind::Mod(def) => def)
+    }
+
     pub fn push_expr(&mut self, kind: ExprKind) -> NodeId {
         let id = NodeId(self.0.len());
         self.0.push(Node {
