@@ -378,7 +378,7 @@ pub fn parse_type_def<'a>(
 
     let id = nodes.push_type_def(TypeDef {
         visibility,
-        name,
+        name: name.unwrap(),
         variants,
     });
     Ok(id)

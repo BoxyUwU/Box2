@@ -12,6 +12,14 @@ impl Nodes {
         unwrap_matches!(&self.0[id.0].kind, NodeKind::TypeDef(def) => def)
     }
 
+    pub fn variant_def(&self, id: NodeId) -> &VariantDef {
+        unwrap_matches!(&self.0[id.0].kind, NodeKind::VariantDef(def) => def)
+    }
+
+    pub fn field_def(&self, id: NodeId) -> &FieldDef {
+        unwrap_matches!(&self.0[id.0].kind, NodeKind::FieldDef(def) => def)
+    }
+
     pub fn push_expr(&mut self, kind: ExprKind) -> NodeId {
         let id = NodeId(self.0.len());
         self.0.push(Node {
@@ -195,7 +203,7 @@ pub struct Module {
 #[derive(Debug)]
 pub struct TypeDef {
     pub visibility: Option<Visibility>,
-    pub name: Option<String>,
+    pub name: String,
     pub variants: Vec<NodeId>,
 }
 
@@ -273,11 +281,4 @@ pub enum BinOp {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum UnOp {
     Neg,
-}
-
-#[derive(Clone, PartialEq, Debug)]
-pub enum Bottom {
-    Int(u64),
-    Float(f64),
-    Ident(String),
 }
