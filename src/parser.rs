@@ -489,9 +489,102 @@ pub fn parse_mod<'a>(
     }))
 }
 
+pub fn parse_crate<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &mut Nodes,
+) -> Result<NodeId, Diagnostic<usize>> {
+    let mut items = Vec::new();
+    while let Some(_) = tok.peek() {
+        let peeked = match tok.peek_if(Token::Kw(Kw::Pub)) {
+            Ok(_) => tok.peek_second(),
+            Err(_) => tok.peek(),
+        }
+        .ok_or_else(|| Diagnostic::error().with_message("unexpected end of file"))?;
+
+        let item_node_id = match &peeked.0 {
+            Token::Kw(Kw::Mod) => parse_mod(tok, nodes)?,
+            Token::Kw(Kw::Type) => parse_type_def(tok, nodes, None)?,
+            Token::Kw(Kw::Fn) => parse_fn(tok, nodes)?,
+            _ => {
+                return Err(Diagnostic::error()
+                    .with_message("non-item in module")
+                    .with_labels(vec![Label::primary(0, peeked.1.clone())]))
+            }
+        };
+        items.push(item_node_id);
+    }
+
+    Ok(nodes.push_mod_def(Module {
+        visibility: Some(Visibility::Pub),
+        name: "".into(),
+        items,
+    }))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn crate_root_valid() {
+        let mut nodes = Nodes(vec![]);
+        let valid_code = [
+            "mod Foo {}",
+            "pub mod Foo {}",
+            "mod Foo { 
+                fn bar() { let _ = 10; } 
+            }",
+            "mod Foo { 
+                fn bar() { let _ = 10; } 
+                pub fn baz() { let _ = 10; }
+            }",
+            "mod Foo {
+                type Bar {
+                    field: Blah,
+                }
+                fn bar() { let _ = 10; } 
+                pub fn baz() { let _ = 10; }
+            }",
+            "mod Foo {
+                mod Bar {
+                    type Foo {}
+                }
+            }",
+            "fn foo() { let _ = 10; }",
+            "pub fn baz() { let _ = 10; }",
+            "",
+        ];
+        for code in valid_code {
+            parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+        }
+
+        let joined = "
+            mod Foo {}
+            pub mod Foo {}
+            mod Foo { 
+                fn bar() { let _ = 10; } 
+            }
+            mod Foo { 
+                fn bar() { let _ = 10; } 
+                pub fn baz() { let _ = 10; }
+            }
+            mod Foo {
+                type Bar {
+                    field: Blah,
+                }
+                fn bar() { let _ = 10; } 
+                pub fn baz() { let _ = 10; }
+            }
+            mod Foo {
+                mod Bar {
+                    type Foo {}
+                }
+            }
+            fn foo() { let _ = 10; }
+            pub fn baz() { let _ = 10; }
+        ";
+        parse_crate(&mut Tokenizer::new(joined), &mut nodes).unwrap();
+    }
 
     #[test]
     fn mod_defs_valid() {
