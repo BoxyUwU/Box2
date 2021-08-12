@@ -1,12 +1,3 @@
-use codespan_reporting::{
-    diagnostic::{Diagnostic, Label},
-    files::SimpleFiles,
-    term::{
-        self,
-        termcolor::{ColorChoice, StandardStream},
-    },
-};
-
 macro_rules! unwrap_matches {
     ($e:expr, $p:pat) => {
         match $e {
@@ -39,6 +30,7 @@ fn main() {
         "mod Foo {}",
     ];
     for code in valid_code {
+        use codespan_reporting::files::SimpleFiles;
         let mut nodes = ast::Nodes(vec![]);
         let mut files = SimpleFiles::new();
         files.add("main.box", code);
