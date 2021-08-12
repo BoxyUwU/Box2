@@ -303,12 +303,19 @@ pub fn parse_type_def<'a>(
     // type def is only permitted to not have a name if it is
     // the rhs of a field i.e. `field: type { ... }`
     if let None = name {
-        name = Some(parent_field.ok_or_else(|| {
+        let field_name = parent_field.ok_or_else(|| {
             Diagnostic::error()
                 .with_message("expected a name")
                 .with_labels(vec![Label::primary(0, type_span)])
-        })?);
-        // FIXME change casing of `parent_field` to be type cased
+        })?;
+        let mut prefix = match field_name.chars().next().unwrap() {
+            '_' => "_",
+            _ => "",
+        }
+        .to_string();
+        let ty_name = heck::CamelCase::to_camel_case(&field_name[..]);
+        prefix.push_str(&ty_name);
+        name = Some(prefix);
     }
 
     tok.next_if(Token::LBrace)

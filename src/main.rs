@@ -28,27 +28,20 @@ mod resolve;
 mod tokenize;
 
 fn main() {
-    let invalid_code = [
-        "pub pub Foo {}",
-        "mod {}",
+    let valid_code = [
         "mod Foo {
-            pub pub fn foo() { let _ = 10; }
+            type Bar {
+                field: type {},
+                _field: type {},
+                _field___bar_OWOFoo: type {},
+            }
         }",
-        "mod Foo {
-            fn foo(,) { let _ = 10; }
-        }",
-        "mod Foo {
-            type {}
-        }",
+        "mod Foo {}",
     ];
-    for code in invalid_code {
+    for code in valid_code {
         let mut nodes = ast::Nodes(vec![]);
         let mut files = SimpleFiles::new();
         files.add("main.box", code);
-        let diagnostic =
-            parser::parse_mod(&mut tokenize::Tokenizer::new(code), &mut nodes).unwrap_err();
-        let writer = StandardStream::stderr(ColorChoice::Always);
-        let config = term::Config::default();
-        term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
+        parser::parse_mod(&mut tokenize::Tokenizer::new(code), &mut nodes).unwrap();
     }
 }
