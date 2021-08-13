@@ -1,3 +1,5 @@
+use codespan_reporting::diagnostic::{Diagnostic, Label};
+
 use crate::ast::*;
 use std::collections::HashMap;
 
@@ -6,6 +8,7 @@ struct Resolver<'ast> {
     nodes: &'ast Nodes,
     resolutions: HashMap<NodeId, NodeId>,
     ribs: Vec<Rib>,
+    errors: Vec<Diagnostic<usize>>,
 }
 
 #[derive(Debug)]
@@ -19,6 +22,7 @@ impl<'ast> Resolver<'ast> {
             nodes,
             resolutions: HashMap::new(),
             ribs: Vec::new(),
+            errors: Vec::new(),
         }
     }
 
@@ -146,8 +150,16 @@ impl<'ast> Resolver<'ast> {
             }
         }
 
-        // FIXME emit errors in name res
+        if let None = initial_res {
+            self.errors.push(
+                Diagnostic::error()
+                    .with_message(format!("unable to resolve `{}`", initial.0))
+                    .with_labels(vec![Label::primary(0, initial.1.clone())]),
+            );
+            return;
+        }
         let mut final_res = initial_res.unwrap();
+
         if let [_, rest @ ..] = path.segments.as_slice() {
             let item_name: fn(&NodeKind) -> &String = |item| match item {
                 NodeKind::Mod(module) => &module.name,
@@ -158,53 +170,86 @@ impl<'ast> Resolver<'ast> {
             };
 
             let mut current_scope = initial_res.unwrap();
-            for (segment, _) in rest {
+            for (segment, span) in rest {
                 let node = &self.nodes.0[current_scope.0];
                 match &node.kind {
                     NodeKind::Mod(module) => {
+                        let mut resolved = false;
                         for item in &module.items {
                             let item_node = &self.nodes.0[item.0];
                             if &segment == &item_name(&item_node.kind) {
                                 current_scope = item_node.id;
+                                resolved = true;
                                 break;
                             }
                         }
+
+                        if resolved == false {
+                            self.errors.push(
+                                Diagnostic::error()
+                                    .with_message(format!("unable to resolve `{}`", segment))
+                                    .with_labels(vec![Label::primary(0, span.clone())]),
+                            );
+                            return;
+                        }
                     }
                     NodeKind::TypeDef(ty_def) => {
-                        'arm: loop {
-                            // single anon variant
-                            if let [variant] = ty_def.variants.as_slice() {
-                                let node = &self.nodes.0[variant.0];
-                                if let NodeKind::VariantDef(def @ VariantDef { name: None, .. }) =
-                                    &node.kind
-                                {
-                                    // FIXME dedupe with `NodeKind::VariantDef` branch
-                                    for ty_def_id in &def.type_defs {
-                                        let ty_node = &self.nodes.0[ty_def_id.0];
-                                        if &segment == &item_name(&ty_node.kind) {
-                                            current_scope = *ty_def_id;
-                                            break 'arm;
-                                        }
+                        // single anon variant
+                        if let [variant] = ty_def.variants.as_slice() {
+                            let node = &self.nodes.0[variant.0];
+                            if let NodeKind::VariantDef(def @ VariantDef { name: None, .. }) =
+                                &node.kind
+                            {
+                                // same as `NodeKind::VariantDef(def)` arm
+                                let mut resolved = false;
+                                for ty_def_id in &def.type_defs {
+                                    let ty_node = &self.nodes.0[ty_def_id.0];
+                                    if &segment == &item_name(&ty_node.kind) {
+                                        current_scope = *ty_def_id;
+                                        resolved = true;
+                                        break;
                                     }
                                 }
-                            }
 
-                            // variants
-                            for variant in &ty_def.variants {
-                                if &segment == &item_name(&self.nodes.0[variant.0].kind) {
-                                    current_scope = *variant;
-                                    break 'arm;
+                                match resolved {
+                                    false => {
+                                        self.errors.push(diag_unresolved(segment, span.clone()));
+                                        return;
+                                    }
+                                    true => continue,
                                 }
                             }
                         }
+
+                        // variants
+                        let mut resolved = false;
+                        for variant in &ty_def.variants {
+                            if &segment == &item_name(&self.nodes.0[variant.0].kind) {
+                                current_scope = *variant;
+                                resolved = true;
+                                break;
+                            }
+                        }
+
+                        if resolved == false {
+                            self.errors.push(diag_unresolved(segment, span.clone()));
+                            return;
+                        }
                     }
                     NodeKind::VariantDef(def) => {
+                        let mut resolved = false;
                         for ty_def_id in &def.type_defs {
                             let ty_node = &self.nodes.0[ty_def_id.0];
                             if &segment == &item_name(&ty_node.kind) {
                                 current_scope = *ty_def_id;
+                                resolved = true;
                                 break;
                             }
+                        }
+
+                        if resolved == false {
+                            self.errors.push(diag_unresolved(segment, span.clone()));
+                            return;
                         }
                     }
                     _ => panic!(""),
@@ -216,15 +261,12 @@ impl<'ast> Resolver<'ast> {
 
         self.resolutions.insert(id, final_res);
     }
+}
 
-    fn resolve_ident(&mut self, id: NodeId, ident: &String) {
-        for rib in self.ribs.iter().rev() {
-            if let Some(&node) = rib.bindings.get(ident) {
-                self.resolutions.insert(id, node);
-                return;
-            }
-        }
-    }
+fn diag_unresolved(unresolved: &str, span: logos::Span) -> Diagnostic<usize> {
+    Diagnostic::error()
+        .with_message(format!("failed to resolve {}", unresolved))
+        .with_labels(vec![Label::primary(0, span)])
 }
 
 #[cfg(test)]
@@ -233,46 +275,42 @@ mod test {
 
     #[test]
     fn resolve_paths() {
+        let code = "
+            type Foo {
+                field: type {},
+            }
+
+            type Other {
+                fffiiield: Foo::Field,
+            }
+
+            type EnumIguess {
+                | Blah { f: type {} }
+            }
+
+            mod my_module {
+                type MyTYyyyy {
+                    inner: EnumIguess::Blah::F,
+                }
+
+                mod barrrr {
+                    type TyTyTy {
+                        ffield: type {}
+                    }
+                }
+            }
+
+            fn foo() {
+                Foo::Field + 10;
+                my_module::barrrr::TyTyTy::Ffield + 10;
+            }";
         let mut nodes = Nodes(vec![]);
-        let root = crate::parser::parse_crate(
-            &mut Tokenizer::new(
-                "type Foo {
-                    field: type {},
-                }
-
-                type Other {
-                    fffiiield: Foo::Field,
-                }
-
-                type EnumIguess {
-                    | Blah { f: type {} }
-                }
-
-                mod my_module {
-                    type MyTYyyyy {
-                        inner: EnumIguess::Blah::F,
-                    }
-
-                    mod barrrr {
-                        type TyTyTy {
-                            ffield: type {}
-                        }
-                    }
-                }
-
-                fn foo() {
-                    Foo::Field + 10;
-                    my_module::barrrr::TyTyTy::Ffield + 10;
-                }",
-            ),
-            &mut nodes,
-        )
-        .unwrap();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
         resolver.resolve_mod(nodes.mod_def(root));
 
-        dbg!(resolver);
+        assert_eq!(resolver.errors.len(), 0);
     }
 
     #[test]
@@ -301,6 +339,7 @@ mod test {
         let other_field_def = nodes.field_def(variant_def.field_defs[1]);
 
         assert_eq!(resolver.resolutions[&other_field_def.ty], anon_ty_id);
+        assert_eq!(resolver.errors.len(), 0);
     }
 
     #[test]
@@ -321,6 +360,7 @@ mod test {
         resolver.resolve_expr(nodes.expr(root));
 
         assert_eq!(resolver.resolutions[foo_ident], let_id);
+        assert_eq!(resolver.errors.len(), 0);
     }
 
     #[test]
@@ -340,5 +380,6 @@ mod test {
         resolver.resolve_expr(nodes.expr(root));
 
         assert!(resolver.resolutions.get(foo_ident).is_none());
+        assert_eq!(resolver.errors.len(), 1);
     }
 }
