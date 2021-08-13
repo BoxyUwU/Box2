@@ -170,13 +170,7 @@ fn parse_expr<'a>(
             .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
         inner
     } else if let Ok(_) = tok.peek_if_ident() {
-        if let Some((Token::PathSep, _)) = tok.peek_second() {
-            let path = parse_path(tok, nodes)?;
-            nodes.push_expr(ExprKind::Path(path))
-        } else {
-            let (ident, _) = tok.next_if_ident().unwrap();
-            nodes.push_expr(ExprKind::Ident(ident.to_owned()))
-        }
+        nodes.push_expr(ExprKind::Path(parse_path(tok)?))
     } else if let Ok((lit, _)) = tok.next_if_lit() {
         nodes.push_expr(ExprKind::Lit(lit))
     } else if let Ok(_) = tok.peek_if(Token::LBrace) {
@@ -205,7 +199,7 @@ fn parse_expr<'a>(
     }
 }
 
-fn parse_path<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Result<Path, Diagnostic<usize>> {
+fn parse_path<'a>(tok: &mut Tokenizer<'a>) -> Result<Path, Diagnostic<usize>> {
     let ident = |tok: &mut Tokenizer<'_>| {
         tok.next_if_ident()
             .map(|(tok, sp)| (tok.to_owned(), sp))
@@ -275,10 +269,7 @@ pub fn parse_fn<'a>(
     while let Ok((ident, _)) = tok.next_if_ident() {
         tok.next_if(Token::Colon)
             .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
-        let (ty, _) = tok
-            .next_if_ident()
-            .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))?;
-        params.push((ident.to_owned(), ty.to_owned()));
+        params.push((ident.to_owned(), parse_ty(tok, nodes)?));
 
         match tok.next_if(Token::Comma) {
             Ok(_) => continue,
@@ -438,19 +429,7 @@ fn parse_fields<'a>(
                 type_defs.push(ty_def_id);
                 ty_def_id
             }
-            Some((Token::Ident(_), _)) => {
-                if let Some((Token::PathSep, _)) = tok.peek_second() {
-                    let path = parse_path(tok, nodes)?;
-                    nodes.push_expr(ExprKind::Path(path))
-                } else {
-                    let (ident, _) = tok.next_if_ident().unwrap();
-                    nodes.push_expr(ExprKind::Ident(ident.to_owned()))
-                }
-            }
-            Some((tok, span)) => {
-                return Err(diag_expected_bound("type", *tok, span.clone()));
-            }
-            _ => return Err(Diagnostic::error()),
+            _ => parse_ty(tok, nodes)?,
         };
 
         field_defs.push(nodes.push_field_def(FieldDef {
@@ -549,6 +528,25 @@ pub fn parse_crate<'a>(
     }))
 }
 
+pub fn parse_ty<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &mut Nodes,
+) -> Result<NodeId, Diagnostic<usize>> {
+    tok.peek_if_ident()
+        .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))?;
+    if let Some((Token::PathSep, _)) = tok.peek_second() {
+        let path = parse_path(tok)?;
+        Ok(nodes.push_ty(Ty { path }))
+    } else {
+        let (ident, span) = tok.next_if_ident().unwrap();
+        Ok(nodes.push_ty(Ty {
+            path: Path {
+                segments: vec![(ident.to_string(), span)],
+            },
+        }))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -556,10 +554,10 @@ mod test {
     #[test]
     fn paths() {
         let mut nodes = Nodes(vec![]);
-        parse_path(&mut Tokenizer::new("Foo::Bar::Variant::Idk"), &mut nodes).unwrap();
-        parse_path(&mut Tokenizer::new("Foo::Bar"), &mut nodes).unwrap();
-        parse_path(&mut Tokenizer::new("Foo::Bar::"), &mut nodes).unwrap_err();
-        parse_path(&mut Tokenizer::new("Foo::"), &mut nodes).unwrap_err();
+        parse_path(&mut Tokenizer::new("Foo::Bar::Variant::Idk")).unwrap();
+        parse_path(&mut Tokenizer::new("Foo::Bar")).unwrap();
+        parse_path(&mut Tokenizer::new("Foo::Bar::")).unwrap_err();
+        parse_path(&mut Tokenizer::new("Foo::")).unwrap_err();
         parse_expr(&mut Tokenizer::new("Foo::Bar + 10"), &mut nodes, 0).unwrap();
     }
 

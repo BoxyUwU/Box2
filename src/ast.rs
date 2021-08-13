@@ -26,8 +26,17 @@ impl Nodes {
         unwrap_matches!(&self.0[id.0].kind, NodeKind::Mod(def) => def)
     }
 
-    pub fn path(&self, id: NodeId) -> &Path {
-        unwrap_matches!(&self.0[id.0].kind, NodeKind::Path(path) => path)
+    pub fn ty(&self, id: NodeId) -> &Ty {
+        unwrap_matches!(&self.0[id.0].kind, NodeKind::Ty(ty) => ty)
+    }
+
+    pub fn push_ty(&mut self, ty: Ty) -> NodeId {
+        let id = NodeId(self.0.len());
+        self.0.push(Node {
+            id,
+            kind: NodeKind::Ty(ty),
+        });
+        id
     }
 
     pub fn push_expr(&mut self, kind: ExprKind) -> NodeId {
@@ -83,15 +92,6 @@ impl Nodes {
         });
         id
     }
-
-    pub fn push_path(&mut self, def: Path) -> NodeId {
-        let id = NodeId(self.0.len());
-        self.0.push(Node {
-            id,
-            kind: NodeKind::Path(def),
-        });
-        id
-    }
 }
 
 impl std::fmt::Display for Nodes {
@@ -104,15 +104,26 @@ impl std::fmt::Display for Nodes {
                     node: NodeId,
                 ) -> std::fmt::Result {
                     let node = &(&nodes.0[node.0]).kind;
+
+                    if let NodeKind::Expr(Expr {
+                        kind: ExprKind::Path(path),
+                        ..
+                    })
+                    | NodeKind::Ty(Ty { path }) = node
+                    {
+                        for (segment, _) in &path.segments[0..path.segments.len() - 1] {
+                            f.write_str(&segment)?;
+                            f.write_str("::")?;
+                        }
+                        f.write_str(&path.segments.last().unwrap().0)?;
+                    }
+
                     if let NodeKind::Expr(Expr { kind, .. }) = node {
                         let kind = kind.clone();
                         let op_str = &kind.op_string();
 
                         match kind {
                             ExprKind::Lit(_) => {
-                                f.write_str(op_str)?;
-                            }
-                            ExprKind::Ident(_) => {
                                 f.write_str(op_str)?;
                             }
                             ExprKind::BinOp(_, lhs, rhs) => {
@@ -166,7 +177,7 @@ impl std::fmt::Display for Nodes {
                         for (param, ty) in &func.params {
                             f.write_str(&param)?;
                             f.write_str(": ")?;
-                            f.write_str(&ty)?;
+                            print_node(f, nodes, *ty)?;
                             f.write_str(",")?;
                         }
                         f.write_str(") ")?;
@@ -206,12 +217,17 @@ pub enum NodeKind {
     VariantDef(VariantDef),
     FieldDef(FieldDef),
     Mod(Module),
-    Path(Path),
+    Ty(Ty),
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum Visibility {
     Pub,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ty {
+    pub path: Path,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -252,7 +268,7 @@ pub struct FieldDef {
 pub struct Fn {
     pub visibility: Option<Visibility>,
     pub name: String,
-    pub params: Vec<(String, String)>,
+    pub params: Vec<(String, NodeId)>,
     pub ret_ty: Option<String>,
     pub body: NodeId,
 }
@@ -270,7 +286,6 @@ pub enum ExprKind {
     BinOp(BinOp, NodeId, NodeId),
     UnOp(UnOp, NodeId),
     Lit(Literal),
-    Ident(String),
     Path(Path),
 }
 
@@ -290,10 +305,17 @@ impl ExprKind {
                 Literal::Float(f) => f.to_string(),
                 Literal::Int(i) => i.to_string(),
             },
-            ExprKind::Ident(ident) => ident.to_string(),
             ExprKind::Block(_) => "".to_string(),
             ExprKind::Let(..) => "".to_string(),
-            ExprKind::Path(..) => "".to_string(),
+            ExprKind::Path(path) => {
+                let mut path_string = String::new();
+                for (segment, _) in &path.segments[..path.segments.len() - 1] {
+                    path_string.push_str(&segment);
+                    path_string.push_str("::");
+                }
+                path_string.push_str(&path.segments.last().unwrap().0);
+                path_string
+            }
         }
     }
 }

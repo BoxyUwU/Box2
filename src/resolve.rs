@@ -83,19 +83,12 @@ impl<'ast> Resolver<'ast> {
                 let field = this.nodes.field_def(field_id);
                 let node = &this.nodes.0[field.ty.0];
                 match &node.kind {
-                    NodeKind::Expr(Expr {
-                        kind: ExprKind::Ident(i),
-                        ..
-                    }) => this.resolve_ident(field.ty, i),
                     NodeKind::TypeDef(_) => this.resolve_type_def(node),
-                    NodeKind::Expr(
-                        expr
-                        @
-                        Expr {
-                            kind: ExprKind::Path(_),
-                            ..
-                        },
-                    ) => this.resolve_expr(expr),
+                    NodeKind::Ty(Ty { path })
+                    | NodeKind::Expr(Expr {
+                        kind: ExprKind::Path(path),
+                        ..
+                    }) => this.resolve_path(node.id, path),
                     _ => unreachable!(),
                 }
             }
@@ -131,7 +124,6 @@ impl<'ast> Resolver<'ast> {
                 self.resolve_expr(self.nodes.expr(*rhs));
             }
             ExprKind::Lit(_) => (),
-            ExprKind::Ident(ident) => self.resolve_ident(expr.id, ident),
             ExprKind::Let(name, rhs) => {
                 self.ribs
                     .last_mut()
@@ -140,88 +132,89 @@ impl<'ast> Resolver<'ast> {
                     .insert(name.to_owned(), expr.id);
                 self.resolve_expr(self.nodes.expr(*rhs));
             }
-            ExprKind::Path(path) => {
-                let initial = &path.segments[0];
-                let mut initial_res = None;
-                for rib in self.ribs.iter().rev() {
-                    if let Some(&node) = rib.bindings.get(&initial.0) {
-                        initial_res = Some(node);
-                        break;
-                    }
-                }
+            ExprKind::Path(path) => self.resolve_path(expr.id, path),
+        }
+    }
 
-                let mut final_res = initial_res.unwrap();
-                if let [_, rest @ ..] = path.segments.as_slice() {
-                    let item_name: fn(&NodeKind) -> &String = |item| match item {
-                        NodeKind::Mod(module) => &module.name,
-                        NodeKind::Fn(func) => &func.name,
-                        NodeKind::TypeDef(ty_def) => &ty_def.name,
-                        NodeKind::VariantDef(variant_def) => variant_def.name.as_ref().unwrap(),
-                        _ => panic!(""),
-                    };
+    fn resolve_path(&mut self, id: NodeId, path: &Path) {
+        let initial = &path.segments[0];
+        let mut initial_res = None;
+        for rib in self.ribs.iter().rev() {
+            if let Some(&node) = rib.bindings.get(&initial.0) {
+                initial_res = Some(node);
+                break;
+            }
+        }
 
-                    // FIXME emit errors in name res
-                    let mut current_scope = initial_res.unwrap();
-                    for (segment, _) in rest {
-                        let node = &self.nodes.0[current_scope.0];
-                        match &node.kind {
-                            NodeKind::Mod(module) => {
-                                for item in &module.items {
-                                    let item_node = &self.nodes.0[item.0];
-                                    if &segment == &item_name(&item_node.kind) {
-                                        current_scope = item_node.id;
-                                        break;
-                                    }
-                                }
+        // FIXME emit errors in name res
+        let mut final_res = initial_res.unwrap();
+        if let [_, rest @ ..] = path.segments.as_slice() {
+            let item_name: fn(&NodeKind) -> &String = |item| match item {
+                NodeKind::Mod(module) => &module.name,
+                NodeKind::Fn(func) => &func.name,
+                NodeKind::TypeDef(ty_def) => &ty_def.name,
+                NodeKind::VariantDef(variant_def) => variant_def.name.as_ref().unwrap(),
+                _ => panic!(""),
+            };
+
+            let mut current_scope = initial_res.unwrap();
+            for (segment, _) in rest {
+                let node = &self.nodes.0[current_scope.0];
+                match &node.kind {
+                    NodeKind::Mod(module) => {
+                        for item in &module.items {
+                            let item_node = &self.nodes.0[item.0];
+                            if &segment == &item_name(&item_node.kind) {
+                                current_scope = item_node.id;
+                                break;
                             }
-                            NodeKind::TypeDef(ty_def) => {
-                                'arm: loop {
-                                    // single anon variant
-                                    if let [variant] = ty_def.variants.as_slice() {
-                                        let node = &self.nodes.0[variant.0];
-                                        if let NodeKind::VariantDef(
-                                            def @ VariantDef { name: None, .. },
-                                        ) = &node.kind
-                                        {
-                                            // FIXME dedupe with `NodeKind::VariantDef` branch
-                                            for ty_def_id in &def.type_defs {
-                                                let ty_node = &self.nodes.0[ty_def_id.0];
-                                                if &segment == &item_name(&ty_node.kind) {
-                                                    current_scope = *ty_def_id;
-                                                    break 'arm;
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // variants
-                                    for variant in &ty_def.variants {
-                                        if &segment == &item_name(&self.nodes.0[variant.0].kind) {
-                                            current_scope = *variant;
+                        }
+                    }
+                    NodeKind::TypeDef(ty_def) => {
+                        'arm: loop {
+                            // single anon variant
+                            if let [variant] = ty_def.variants.as_slice() {
+                                let node = &self.nodes.0[variant.0];
+                                if let NodeKind::VariantDef(def @ VariantDef { name: None, .. }) =
+                                    &node.kind
+                                {
+                                    // FIXME dedupe with `NodeKind::VariantDef` branch
+                                    for ty_def_id in &def.type_defs {
+                                        let ty_node = &self.nodes.0[ty_def_id.0];
+                                        if &segment == &item_name(&ty_node.kind) {
+                                            current_scope = *ty_def_id;
                                             break 'arm;
                                         }
                                     }
                                 }
                             }
-                            NodeKind::VariantDef(def) => {
-                                for ty_def_id in &def.type_defs {
-                                    let ty_node = &self.nodes.0[ty_def_id.0];
-                                    if &segment == &item_name(&ty_node.kind) {
-                                        current_scope = *ty_def_id;
-                                        break;
-                                    }
+
+                            // variants
+                            for variant in &ty_def.variants {
+                                if &segment == &item_name(&self.nodes.0[variant.0].kind) {
+                                    current_scope = *variant;
+                                    break 'arm;
                                 }
                             }
-                            _ => panic!(""),
                         }
                     }
-
-                    final_res = current_scope;
+                    NodeKind::VariantDef(def) => {
+                        for ty_def_id in &def.type_defs {
+                            let ty_node = &self.nodes.0[ty_def_id.0];
+                            if &segment == &item_name(&ty_node.kind) {
+                                current_scope = *ty_def_id;
+                                break;
+                            }
+                        }
+                    }
+                    _ => panic!(""),
                 }
-
-                self.resolutions.insert(expr.id, final_res);
             }
+
+            final_res = current_scope;
         }
+
+        self.resolutions.insert(id, final_res);
     }
 
     fn resolve_ident(&mut self, id: NodeId, ident: &String) {
