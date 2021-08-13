@@ -170,7 +170,41 @@ fn parse_expr<'a>(
             .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
         inner
     } else if let Ok(_) = tok.peek_if_ident() {
-        nodes.push_expr(ExprKind::Path(parse_path(tok)?))
+        let path = nodes.push_expr(ExprKind::Path(parse_path(tok)?));
+
+        // handle type construction i.e.
+        // `Foo { field: 10 + 1 }`
+        match tok.next_if(Token::LBrace) {
+            Err(_) => path,
+            Ok(_) => {
+                let mut fields = Vec::new();
+                while let Ok((ident, span)) = tok.next_if_ident() {
+                    tok.next_if(Token::Colon)
+                        .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
+                    let rhs = parse_expr(tok, nodes, 0)?;
+
+                    let field = nodes.push_expr(ExprKind::FieldInit(FieldInit {
+                        ident: ident.to_owned(),
+                        span: span.clone(),
+                        expr: rhs,
+                    }));
+                    fields.push(field);
+
+                    match tok.next_if(Token::Comma) {
+                        Err(_) => break,
+                        Ok(_) => continue,
+                    }
+                }
+
+                tok.next_if(Token::RBrace)
+                    .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
+
+                nodes.push_expr(ExprKind::TypeInit(TypeInit {
+                    path,
+                    field_inits: fields,
+                }))
+            }
+        }
     } else if let Ok((lit, _)) = tok.next_if_lit() {
         nodes.push_expr(ExprKind::Lit(lit))
     } else if let Ok(_) = tok.peek_if(Token::LBrace) {

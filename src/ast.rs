@@ -160,6 +160,8 @@ impl std::fmt::Display for Nodes {
                                 print_node(f, nodes, expr)?;
                             }
                             ExprKind::Path(..) => (),
+                            ExprKind::TypeInit(..) => (),
+                            ExprKind::FieldInit(..) => (),
                         }
                     }
 
@@ -287,6 +289,21 @@ pub enum ExprKind {
     UnOp(UnOp, NodeId),
     Lit(Literal),
     Path(Path),
+    TypeInit(TypeInit),
+    FieldInit(FieldInit),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldInit {
+    pub ident: String,
+    pub span: Span,
+    pub expr: NodeId,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeInit {
+    pub path: NodeId,
+    pub field_inits: Vec<NodeId>,
 }
 
 impl ExprKind {
@@ -316,6 +333,8 @@ impl ExprKind {
                 path_string.push_str(&path.segments.last().unwrap().0);
                 path_string
             }
+            ExprKind::TypeInit(..) => "".to_string(),
+            ExprKind::FieldInit(..) => "".to_string(),
         }
     }
 }

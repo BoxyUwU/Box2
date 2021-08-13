@@ -137,6 +137,87 @@ impl<'ast> Resolver<'ast> {
                 self.resolve_expr(self.nodes.expr(*rhs));
             }
             ExprKind::Path(path) => self.resolve_path(expr.id, path),
+            ExprKind::TypeInit(ty_init) => {
+                let path = unwrap_matches!(&self.nodes.0[ty_init.path.0].kind, NodeKind::Expr(expr) => expr);
+                self.resolve_expr(path);
+
+                for field_init_id in &ty_init.field_inits {
+                    let field_init = unwrap_matches!(
+                        &self.nodes.0[field_init_id.0].kind,
+                        NodeKind::Expr(Expr {
+                            kind: ExprKind::FieldInit(f),
+                            ..
+                        }) => f
+                    );
+
+                    let rhs = self.nodes.expr(field_init.expr);
+                    self.resolve_expr(rhs);
+
+                    if let Some(&res) = self.resolutions.get(&path.id) {
+                        match &self.nodes.0[res.0].kind {
+                            NodeKind::TypeDef(ty_def) => {
+                                if ty_def.variants.len() > 1
+                                    || self.nodes.variant_def(ty_def.variants[0]).name.is_some()
+                                {
+                                    let path =
+                                        unwrap_matches!(&path.kind, ExprKind::Path(path) => path);
+                                    let ty_span = path.segments.last().unwrap().1.clone();
+                                    self.errors.push(
+                                        Diagnostic::error()
+                                            .with_message("type init expr on type with variants")
+                                            .with_labels(vec![Label::primary(0, ty_span)]),
+                                    );
+                                } else {
+                                    let variant_def = self.nodes.variant_def(ty_def.variants[0]);
+                                    let mut resolved = false;
+                                    for field in &variant_def.field_defs {
+                                        if &field_init.ident == &self.nodes.field_def(*field).name {
+                                            self.resolutions.insert(*field_init_id, *field);
+                                            resolved = true;
+                                            break;
+                                        }
+                                    }
+
+                                    if resolved == false {
+                                        self.errors.push(diag_unresolved(
+                                            &field_init.ident,
+                                            field_init.span.clone(),
+                                        ));
+                                    }
+                                }
+                            }
+                            NodeKind::VariantDef(variant_def) => {
+                                let mut resolved = false;
+                                for field in &variant_def.field_defs {
+                                    if &field_init.ident == &self.nodes.field_def(*field).name {
+                                        self.resolutions.insert(*field_init_id, *field);
+                                        resolved = true;
+                                        break;
+                                    }
+                                }
+
+                                if resolved == false {
+                                    self.errors.push(diag_unresolved(
+                                        &field_init.ident,
+                                        field_init.span.clone(),
+                                    ));
+                                }
+                            }
+                            _ => {
+                                let path =
+                                    unwrap_matches!(&path.kind, ExprKind::Path(path) => path);
+                                let path_span = path.segments.last().unwrap().1.clone();
+                                self.errors.push(
+                                    Diagnostic::error()
+                                        .with_message("type init expr not on a type")
+                                        .with_labels(vec![Label::primary(0, path_span)]),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            ExprKind::FieldInit(..) => panic!(""),
         }
     }
 
@@ -195,29 +276,25 @@ impl<'ast> Resolver<'ast> {
                     }
                     NodeKind::TypeDef(ty_def) => {
                         // single anon variant
-                        if let [variant] = ty_def.variants.as_slice() {
-                            let node = &self.nodes.0[variant.0];
-                            if let NodeKind::VariantDef(def @ VariantDef { name: None, .. }) =
-                                &node.kind
-                            {
-                                // same as `NodeKind::VariantDef(def)` arm
-                                let mut resolved = false;
-                                for ty_def_id in &def.type_defs {
-                                    let ty_node = &self.nodes.0[ty_def_id.0];
-                                    if &segment == &item_name(&ty_node.kind) {
-                                        current_scope = *ty_def_id;
-                                        resolved = true;
-                                        break;
-                                    }
+                        if let def @ VariantDef { name: None, .. } =
+                            self.nodes.variant_def(ty_def.variants[0])
+                        {
+                            let mut resolved = false;
+                            for ty_def_id in &def.type_defs {
+                                let ty_node = &self.nodes.0[ty_def_id.0];
+                                if &segment == &item_name(&ty_node.kind) {
+                                    current_scope = *ty_def_id;
+                                    resolved = true;
+                                    break;
                                 }
+                            }
 
-                                match resolved {
-                                    false => {
-                                        self.errors.push(diag_unresolved(segment, span.clone()));
-                                        return;
-                                    }
-                                    true => continue,
+                            match resolved {
+                                false => {
+                                    self.errors.push(diag_unresolved(segment, span.clone()));
+                                    return;
                                 }
+                                true => continue,
                             }
                         }
 
@@ -272,6 +349,112 @@ fn diag_unresolved(unresolved: &str, span: logos::Span) -> Diagnostic<usize> {
 #[cfg(test)]
 mod test {
     use crate::{ast::*, resolve::Resolver, tokenize::Tokenizer};
+
+    #[test]
+    fn resolve_type_init_fail() {
+        let code = "
+            type FieldTy {}
+
+            type Foo {
+                field: FieldTy,
+            }
+
+            type Bar {
+                | Baz { field: FieldTy }
+            }
+
+            fn foo() {
+                Foo {
+                    field_awd: FieldTy,
+                };
+
+                Bar {
+                    field: 10,
+                };
+
+                Bar::Bazz {}
+
+                Blah {}
+            }
+        ";
+
+        let mut nodes = Nodes(vec![]);
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+
+        let mut resolver = Resolver::new(&nodes);
+        resolver.resolve_mod(nodes.mod_def(root));
+
+        // for diag in resolver.errors.iter() {
+        //     let mut files = codespan_reporting::files::SimpleFiles::new();
+        //     files.add("main.box", code);
+        //     let writer = codespan_reporting::term::termcolor::StandardStream::stderr(
+        //         codespan_reporting::term::termcolor::ColorChoice::Always,
+        //     );
+        //     let config = codespan_reporting::term::Config::default();
+        //     codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+        // }
+
+        assert_eq!(resolver.errors.len(), 4);
+    }
+
+    #[test]
+    fn resolve_type_init() {
+        let code = "
+            type FieldTy {}
+
+            type Foo {
+                field: FieldTy,
+                fielddd: FieldTy,
+            }
+
+            type FooTwo {
+                | Bar {
+                    field: FieldTy,
+                }
+            }
+
+            type Nested {
+                | Foo {
+                    field: type {
+                        | Baz {
+                            inner: FieldTy
+                        }
+                    }
+                }
+            }
+
+            fn foo() {
+                FieldTy {};
+
+                Foo {
+                    field: 10 + 2,
+                    fielddd: 12 + 13
+                };
+
+                FooTwo::Bar {
+                    field: 122222,
+                };
+
+                Nested::Foo::Field::Baz {
+                    inner: 12,
+                };
+
+                Nested::Foo {
+                    field: Nested::Foo::Field::Baz {
+                        inner: 10000,
+                    },
+                };
+            }
+        ";
+
+        let mut nodes = Nodes(vec![]);
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+
+        let mut resolver = Resolver::new(&nodes);
+        resolver.resolve_mod(nodes.mod_def(root));
+
+        assert_eq!(resolver.errors.len(), 0);
+    }
 
     #[test]
     fn resolve_paths() {
