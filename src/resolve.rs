@@ -36,6 +36,7 @@ impl<'ast> Resolver<'ast> {
             Some(match &node.kind {
                 NodeKind::Fn(func) => (func.name.clone(), id),
                 NodeKind::TypeDef(ty_def) => (ty_def.name.clone(), id),
+                NodeKind::Mod(module) => (module.name.clone(), id),
                 _ => return None,
             })
         }));
@@ -87,6 +88,14 @@ impl<'ast> Resolver<'ast> {
                         ..
                     }) => this.resolve_ident(field.ty, i),
                     NodeKind::TypeDef(_) => this.resolve_type_def(node),
+                    NodeKind::Expr(
+                        expr
+                        @
+                        Expr {
+                            kind: ExprKind::Path(_),
+                            ..
+                        },
+                    ) => this.resolve_expr(expr),
                     _ => unreachable!(),
                 }
             }
@@ -131,6 +140,87 @@ impl<'ast> Resolver<'ast> {
                     .insert(name.to_owned(), expr.id);
                 self.resolve_expr(self.nodes.expr(*rhs));
             }
+            ExprKind::Path(path) => {
+                let initial = &path.segments[0];
+                let mut initial_res = None;
+                for rib in self.ribs.iter().rev() {
+                    if let Some(&node) = rib.bindings.get(&initial.0) {
+                        initial_res = Some(node);
+                        break;
+                    }
+                }
+
+                let mut final_res = initial_res.unwrap();
+                if let [_, rest @ ..] = path.segments.as_slice() {
+                    let item_name: fn(&NodeKind) -> &String = |item| match item {
+                        NodeKind::Mod(module) => &module.name,
+                        NodeKind::Fn(func) => &func.name,
+                        NodeKind::TypeDef(ty_def) => &ty_def.name,
+                        NodeKind::VariantDef(variant_def) => variant_def.name.as_ref().unwrap(),
+                        _ => panic!(""),
+                    };
+
+                    // FIXME emit errors in name res
+                    let mut current_scope = initial_res.unwrap();
+                    for (segment, _) in rest {
+                        let node = &self.nodes.0[current_scope.0];
+                        match &node.kind {
+                            NodeKind::Mod(module) => {
+                                for item in &module.items {
+                                    let item_node = &self.nodes.0[item.0];
+                                    if &segment == &item_name(&item_node.kind) {
+                                        current_scope = item_node.id;
+                                        break;
+                                    }
+                                }
+                            }
+                            NodeKind::TypeDef(ty_def) => {
+                                'arm: loop {
+                                    // single anon variant
+                                    if let [variant] = ty_def.variants.as_slice() {
+                                        let node = &self.nodes.0[variant.0];
+                                        if let NodeKind::VariantDef(
+                                            def @ VariantDef { name: None, .. },
+                                        ) = &node.kind
+                                        {
+                                            // FIXME dedupe with `NodeKind::VariantDef` branch
+                                            for ty_def_id in &def.type_defs {
+                                                let ty_node = &self.nodes.0[ty_def_id.0];
+                                                if &segment == &item_name(&ty_node.kind) {
+                                                    current_scope = *ty_def_id;
+                                                    break 'arm;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // variants
+                                    for variant in &ty_def.variants {
+                                        if &segment == &item_name(&self.nodes.0[variant.0].kind) {
+                                            current_scope = *variant;
+                                            break 'arm;
+                                        }
+                                    }
+                                }
+                            }
+                            NodeKind::VariantDef(def) => {
+                                for ty_def_id in &def.type_defs {
+                                    let ty_node = &self.nodes.0[ty_def_id.0];
+                                    if &segment == &item_name(&ty_node.kind) {
+                                        current_scope = *ty_def_id;
+                                        break;
+                                    }
+                                }
+                            }
+                            _ => panic!(""),
+                        }
+                    }
+
+                    final_res = current_scope;
+                }
+
+                self.resolutions.insert(expr.id, final_res);
+            }
         }
     }
 
@@ -147,6 +237,50 @@ impl<'ast> Resolver<'ast> {
 #[cfg(test)]
 mod test {
     use crate::{ast::*, resolve::Resolver, tokenize::Tokenizer};
+
+    #[test]
+    fn resolve_paths() {
+        let mut nodes = Nodes(vec![]);
+        let root = crate::parser::parse_crate(
+            &mut Tokenizer::new(
+                "type Foo {
+                    field: type {},
+                }
+
+                type Other {
+                    fffiiield: Foo::Field,
+                }
+
+                type EnumIguess {
+                    | Blah { f: type {} }
+                }
+
+                mod my_module {
+                    type MyTYyyyy {
+                        inner: EnumIguess::Blah::F,
+                    }
+
+                    mod barrrr {
+                        type TyTyTy {
+                            ffield: type {}
+                        }
+                    }
+                }
+
+                fn foo() {
+                    Foo::Field + 10;
+                    my_module::barrrr::TyTyTy::Ffield + 10;
+                }",
+            ),
+            &mut nodes,
+        )
+        .unwrap();
+
+        let mut resolver = Resolver::new(&nodes);
+        resolver.resolve_mod(nodes.mod_def(root));
+
+        dbg!(resolver);
+    }
 
     #[test]
     fn resolve_type_def() {

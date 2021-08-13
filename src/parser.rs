@@ -123,6 +123,7 @@ impl<'a> Token<'a> {
             Token::Literal(Literal::Float(f)) => f.to_string(),
             Token::Kw(kw) => kw.format_found(),
             t => match t {
+                Token::PathSep => "::",
                 Token::Plus => "+",
                 Token::Hyphen => "-",
                 Token::Star => "*",
@@ -168,8 +169,14 @@ fn parse_expr<'a>(
         tok.next_if(Token::RParen)
             .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
         inner
-    } else if let Ok((ident, _)) = tok.next_if_ident() {
-        nodes.push_expr(ExprKind::Ident(ident.to_owned()))
+    } else if let Ok(_) = tok.peek_if_ident() {
+        if let Some((Token::PathSep, _)) = tok.peek_second() {
+            let path = parse_path(tok, nodes)?;
+            nodes.push_expr(ExprKind::Path(path))
+        } else {
+            let (ident, _) = tok.next_if_ident().unwrap();
+            nodes.push_expr(ExprKind::Ident(ident.to_owned()))
+        }
     } else if let Ok((lit, _)) = tok.next_if_lit() {
         nodes.push_expr(ExprKind::Lit(lit))
     } else if let Ok(_) = tok.peek_if(Token::LBrace) {
@@ -196,6 +203,22 @@ fn parse_expr<'a>(
         let rhs = parse_expr(tok, nodes, r_bp)?;
         lhs = nodes.push_expr(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs));
     }
+}
+
+fn parse_path<'a>(tok: &mut Tokenizer<'a>, nodes: &mut Nodes) -> Result<Path, Diagnostic<usize>> {
+    let ident = |tok: &mut Tokenizer<'_>| {
+        tok.next_if_ident()
+            .map(|(tok, sp)| (tok.to_owned(), sp))
+            .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))
+    };
+
+    let mut segments = vec![ident(tok)?];
+    while let Ok(_) = tok.next_if(Token::PathSep) {
+        let segment = ident(tok)?;
+        segments.push(segment);
+    }
+
+    Ok(Path { segments })
 }
 
 fn parse_let_expr<'a>(
@@ -416,8 +439,13 @@ fn parse_fields<'a>(
                 ty_def_id
             }
             Some((Token::Ident(_), _)) => {
-                let ty = unwrap_matches!(tok.next(), Some((Token::Ident(ty), _)) => ty);
-                nodes.push_expr(ExprKind::Ident(ty.to_string()))
+                if let Some((Token::PathSep, _)) = tok.peek_second() {
+                    let path = parse_path(tok, nodes)?;
+                    nodes.push_expr(ExprKind::Path(path))
+                } else {
+                    let (ident, _) = tok.next_if_ident().unwrap();
+                    nodes.push_expr(ExprKind::Ident(ident.to_owned()))
+                }
             }
             Some((tok, span)) => {
                 return Err(diag_expected_bound("type", *tok, span.clone()));
@@ -524,6 +552,16 @@ pub fn parse_crate<'a>(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn paths() {
+        let mut nodes = Nodes(vec![]);
+        parse_path(&mut Tokenizer::new("Foo::Bar::Variant::Idk"), &mut nodes).unwrap();
+        parse_path(&mut Tokenizer::new("Foo::Bar"), &mut nodes).unwrap();
+        parse_path(&mut Tokenizer::new("Foo::Bar::"), &mut nodes).unwrap_err();
+        parse_path(&mut Tokenizer::new("Foo::"), &mut nodes).unwrap_err();
+        parse_expr(&mut Tokenizer::new("Foo::Bar + 10"), &mut nodes, 0).unwrap();
+    }
 
     #[test]
     fn crate_root_valid() {

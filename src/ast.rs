@@ -1,3 +1,5 @@
+use logos::Span;
+
 use crate::tokenize::Literal;
 
 #[derive(Debug)]
@@ -22,6 +24,10 @@ impl Nodes {
 
     pub fn mod_def(&self, id: NodeId) -> &Module {
         unwrap_matches!(&self.0[id.0].kind, NodeKind::Mod(def) => def)
+    }
+
+    pub fn path(&self, id: NodeId) -> &Path {
+        unwrap_matches!(&self.0[id.0].kind, NodeKind::Path(path) => path)
     }
 
     pub fn push_expr(&mut self, kind: ExprKind) -> NodeId {
@@ -74,6 +80,15 @@ impl Nodes {
         self.0.push(Node {
             id,
             kind: NodeKind::Mod(def),
+        });
+        id
+    }
+
+    pub fn push_path(&mut self, def: Path) -> NodeId {
+        let id = NodeId(self.0.len());
+        self.0.push(Node {
+            id,
+            kind: NodeKind::Path(def),
         });
         id
     }
@@ -133,6 +148,7 @@ impl std::fmt::Display for Nodes {
                                 f.write_str(" = ")?;
                                 print_node(f, nodes, expr)?;
                             }
+                            ExprKind::Path(..) => (),
                         }
                     }
 
@@ -190,11 +206,17 @@ pub enum NodeKind {
     VariantDef(VariantDef),
     FieldDef(FieldDef),
     Mod(Module),
+    Path(Path),
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum Visibility {
     Pub,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Path {
+    pub segments: Vec<(String, Span)>,
 }
 
 #[derive(Debug)]
@@ -249,6 +271,7 @@ pub enum ExprKind {
     UnOp(UnOp, NodeId),
     Lit(Literal),
     Ident(String),
+    Path(Path),
 }
 
 impl ExprKind {
@@ -270,6 +293,7 @@ impl ExprKind {
             ExprKind::Ident(ident) => ident.to_string(),
             ExprKind::Block(_) => "".to_string(),
             ExprKind::Let(..) => "".to_string(),
+            ExprKind::Path(..) => "".to_string(),
         }
     }
 }

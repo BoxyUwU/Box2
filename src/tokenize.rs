@@ -50,6 +50,8 @@ pub enum Token<'a> {
     #[token("type", |_| Kw::Type)]
     Kw(Kw),
 
+    #[token("::")]
+    PathSep,
     #[token("|")]
     UpLine,
     #[token("->")]
