@@ -138,9 +138,9 @@ impl<'ast> Resolver<'ast> {
                     self.resolve_expr(field_init.expr);
 
                     if let Some(&res) = self.resolutions.get(&path.id) {
-                        match &self.nodes.get(res).kind {
-                            NodeKind::Item(Item::VariantDef(variant_def))
-                            | &NodeKind::Item(Item::TypeDef(TypeDef {
+                        match self.nodes.get(res) {
+                            Node::Item(Item::VariantDef(variant_def))
+                            | &Node::Item(Item::TypeDef(TypeDef {
                                 variants: box [variant_def @ VariantDef { name: None, .. }],
                                 ..
                             })) => {
@@ -162,7 +162,7 @@ impl<'ast> Resolver<'ast> {
                             }
                             res => {
                                 let message = match res {
-                                    NodeKind::Item(Item::TypeDef(..)) => {
+                                    Node::Item(Item::TypeDef(..)) => {
                                         "type init expr on type with variants"
                                     }
                                     _ => "type init expr not on a type",
@@ -220,7 +220,7 @@ impl<'ast> Resolver<'ast> {
         if let [_, rest @ ..] = path.segments.as_slice() {
             let mut current_scope = initial_res.unwrap();
             for (segment, span) in rest {
-                match self.nodes.get(current_scope).kind.unwrap_item() {
+                match self.nodes.get(current_scope).unwrap_item() {
                     Item::Mod(module) => {
                         let mut resolved = false;
                         for item in &module.items {
@@ -318,7 +318,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.kind.unwrap_mod());
+        resolver.resolve_mod(root.unwrap_mod());
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -344,7 +344,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.kind.unwrap_mod());
+        resolver.resolve_mod(root.unwrap_mod());
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -377,7 +377,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.kind.unwrap_mod());
+        resolver.resolve_mod(root.unwrap_mod());
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -424,7 +424,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.kind.unwrap_mod());
+        resolver.resolve_mod(root.unwrap_mod());
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -493,7 +493,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.kind.unwrap_mod());
+        resolver.resolve_mod(root.unwrap_mod());
 
         assert_eq!(resolver.errors.len(), 0);
     }
@@ -533,7 +533,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.kind.unwrap_mod());
+        resolver.resolve_mod(root.unwrap_mod());
 
         assert_eq!(resolver.errors.len(), 0);
     }
@@ -553,9 +553,9 @@ mod test {
         .unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.kind.unwrap_mod());
+        resolver.resolve_mod(root.unwrap_mod());
 
-        let root_mod = root.kind.unwrap_mod();
+        let root_mod = root.unwrap_mod();
 
         let ty_def = unwrap_matches!(root_mod.items[0], Item::TypeDef(ty_def) => ty_def);
         let variant_def = ty_def.variants[0];
@@ -575,7 +575,7 @@ mod test {
             &nodes,
         )
         .unwrap();
-        let stmts = unwrap_matches!(&root.kind.unwrap_expr().kind, ExprKind::Block(stmts) => stmts);
+        let stmts = unwrap_matches!(&root.unwrap_expr().kind, ExprKind::Block(stmts) => stmts);
 
         let let_id = stmts[0].0.id;
         let foo_ident = unwrap_matches!(
@@ -584,7 +584,7 @@ mod test {
         );
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_expr(root.kind.unwrap_expr());
+        resolver.resolve_expr(root.unwrap_expr());
 
         assert_eq!(resolver.resolutions[&foo_ident], let_id);
         assert_eq!(resolver.errors.len(), 0);
@@ -598,7 +598,7 @@ mod test {
             &nodes,
         )
         .unwrap();
-        let stmts = unwrap_matches!(&root.kind.unwrap_expr().kind, ExprKind::Block(stmts) => stmts);
+        let stmts = unwrap_matches!(&root.unwrap_expr().kind, ExprKind::Block(stmts) => stmts);
 
         let foo_ident = unwrap_matches!(
             &stmts[1].0.kind,
@@ -606,7 +606,7 @@ mod test {
         );
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_expr(root.kind.unwrap_expr());
+        resolver.resolve_expr(root.unwrap_expr());
 
         assert!(resolver.resolutions.get(&foo_ident).is_none());
         assert_eq!(resolver.errors.len(), 1);

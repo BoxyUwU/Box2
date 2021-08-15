@@ -175,14 +175,10 @@ fn parse_expr<'a>(
     } else if let Some(unop) = tok.next_if_disambig_un_op() {
         let (_, r_bp) = unop.bp();
         let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
-        nodes
-            .push_expr(ExprKind::UnOp(unop, rhs))
-            .kind
-            .unwrap_expr()
+        nodes.push_expr(ExprKind::UnOp(unop, rhs)).unwrap_expr()
     } else if let Ok(_) = tok.peek_if_ident() {
         let path = nodes
             .push_expr(ExprKind::Path(parse_path(tok)?))
-            .kind
             .unwrap_expr();
 
         // handle type construction i.e.
@@ -205,7 +201,6 @@ fn parse_expr<'a>(
                                 expr: rhs,
                             })
                         })
-                        .kind
                         .unwrap_expr();
                     fields.push(unwrap_matches!(&field.kind, ExprKind::FieldInit(init) => init));
 
@@ -223,16 +218,15 @@ fn parse_expr<'a>(
                         path,
                         field_inits: fields,
                     }))
-                    .kind
                     .unwrap_expr()
             }
         }
     } else if let Ok((lit, _)) = tok.next_if_lit() {
-        nodes.push_expr(ExprKind::Lit(lit)).kind.unwrap_expr()
+        nodes.push_expr(ExprKind::Lit(lit)).unwrap_expr()
     } else if let Ok(_) = tok.peek_if(Token::LBrace) {
-        parse_block_expr(tok, nodes)?.kind.unwrap_expr()
+        parse_block_expr(tok, nodes)?.unwrap_expr()
     } else if let Ok(_) = tok.peek_if(Token::Kw(Kw::Let)) {
-        parse_let_expr(tok, nodes)?.kind.unwrap_expr()
+        parse_let_expr(tok, nodes)?.unwrap_expr()
     } else {
         match tok.next() {
             None => return Err(Diagnostic::error().with_message("unexpected end of filed")),
@@ -277,7 +271,6 @@ fn parse_expr<'a>(
                             func,
                             args: elements,
                         }))
-                        .kind
                         .unwrap_expr()
                 }
                 _ => {
@@ -286,7 +279,6 @@ fn parse_expr<'a>(
                             func: lhs,
                             args: elements,
                         }))
-                        .kind
                         .unwrap_expr()
                 }
             }
@@ -296,7 +288,6 @@ fn parse_expr<'a>(
         let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
         lhs = nodes
             .push_expr(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs))
-            .kind
             .unwrap_expr();
     }
 }
@@ -371,7 +362,7 @@ pub fn parse_fn<'a>(
     while let Ok((ident, _)) = tok.next_if_ident() {
         tok.next_if(Token::Colon)
             .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
-        params.push((ident.to_owned(), parse_ty(tok, nodes)?.kind.unwrap_ty()));
+        params.push((ident.to_owned(), parse_ty(tok, nodes)?.unwrap_ty()));
 
         match tok.next_if(Token::Comma) {
             Ok(_) => continue,
@@ -391,7 +382,7 @@ pub fn parse_fn<'a>(
         );
     }
 
-    let body = parse_block_expr(tok, nodes)?.kind.unwrap_expr();
+    let body = parse_block_expr(tok, nodes)?.unwrap_expr();
     Ok(nodes.push_fn(|id| Fn {
         id,
         visibility,
@@ -471,7 +462,7 @@ pub fn parse_type_def<'a>(
                 type_defs: type_defs.into_boxed_slice(),
                 field_defs: field_defs.into_boxed_slice(),
             });
-            variants.push(variant.kind.unwrap_variant_def());
+            variants.push(variant.unwrap_variant_def());
 
             match tok.next_if(Token::Comma) {
                 Ok(_) => continue,
@@ -491,7 +482,7 @@ pub fn parse_type_def<'a>(
             type_defs: type_defs.into_boxed_slice(),
             field_defs: field_defs.into_boxed_slice(),
         });
-        variants.push(variant.kind.unwrap_variant_def());
+        variants.push(variant.unwrap_variant_def());
     }
 
     tok.next_if(Token::RBrace)
@@ -535,7 +526,6 @@ fn parse_fields<'a>(
         let ty = match tok.peek() {
             Some((Token::Kw(Kw::Type | Kw::Pub), _)) => {
                 let ty_def = parse_type_def(tok, nodes, Some((name.clone(), name_span.clone())))?
-                    .kind
                     .unwrap_type_def();
                 type_defs.push(ty_def);
 
@@ -546,10 +536,9 @@ fn parse_fields<'a>(
                             segments: vec![(ty_def.name.clone(), ty_def.name_span.clone())],
                         },
                     })
-                    .kind
                     .unwrap_ty()
             }
-            _ => parse_ty(tok, nodes)?.kind.unwrap_ty(),
+            _ => parse_ty(tok, nodes)?.unwrap_ty(),
         };
 
         field_defs.push(
@@ -560,7 +549,6 @@ fn parse_fields<'a>(
                     name,
                     ty,
                 })
-                .kind
                 .unwrap_field_def(),
         );
 
@@ -612,7 +600,7 @@ pub fn parse_mod<'a>(
                     .with_labels(vec![Label::primary(0, peeked.1.clone())]))
             }
         };
-        items.push(item_node.kind.unwrap_item());
+        items.push(item_node.unwrap_item());
     }
 
     Ok(nodes.push_mod_def(|id| Module {
@@ -645,7 +633,7 @@ pub fn parse_crate<'a>(
                     .with_labels(vec![Label::primary(0, peeked.1.clone())]))
             }
         };
-        items.push(item_node.kind.unwrap_item());
+        items.push(item_node.unwrap_item());
     }
 
     Ok(nodes.push_mod_def(|id| Module {

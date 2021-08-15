@@ -18,80 +18,56 @@ impl<'a> Nodes<'a> {
 
     pub fn push_ty(&'a self, f: impl FnOnce(NodeId) -> Ty) -> &Node {
         let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node {
-            id,
-            kind: NodeKind::Ty(f(id)),
-        });
+        let node = &*self.0.alloc(Node::Ty(f(id)));
         self.1.borrow_mut().push(node);
         node
     }
 
     pub fn push_expr_with(&'a self, f: impl FnOnce(NodeId) -> ExprKind<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node {
-            id,
-            kind: NodeKind::Expr(Expr { id, kind: f(id) }),
-        });
+        let node = &*self.0.alloc(Node::Expr(Expr { id, kind: f(id) }));
         self.1.borrow_mut().push(node);
         node
     }
 
     pub fn push_expr(&'a self, kind: ExprKind<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node {
-            id,
-            kind: NodeKind::Expr(Expr { id, kind }),
-        });
+        let node = &*self.0.alloc(Node::Expr(Expr { id, kind }));
         self.1.borrow_mut().push(node);
         node
     }
 
     pub fn push_fn(&'a self, f: impl FnOnce(NodeId) -> Fn<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node {
-            id,
-            kind: NodeKind::Item(Item::Fn(f(id))),
-        });
+        let node = &*self.0.alloc(Node::Item(Item::Fn(f(id))));
         self.1.borrow_mut().push(node);
         node
     }
 
     pub fn push_variant_def(&'a self, f: impl FnOnce(NodeId) -> VariantDef<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node {
-            id,
-            kind: NodeKind::Item(Item::VariantDef(f(id))),
-        });
+        let node = &*self.0.alloc(Node::Item(Item::VariantDef(f(id))));
         self.1.borrow_mut().push(node);
         node
     }
 
     pub fn push_field_def(&'a self, f: impl FnOnce(NodeId) -> FieldDef<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node {
-            id,
-            kind: NodeKind::Item(Item::FieldDef(f(id))),
-        });
+        let node = &*self.0.alloc(Node::Item(Item::FieldDef(f(id))));
         self.1.borrow_mut().push(node);
         node
     }
 
     pub fn push_type_def(&'a self, f: impl FnOnce(NodeId) -> TypeDef<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node {
-            id,
-            kind: NodeKind::Item(Item::TypeDef(f(id))),
-        });
+        let node = &*self.0.alloc(Node::Item(Item::TypeDef(f(id))));
         self.1.borrow_mut().push(node);
         node
     }
 
     pub fn push_mod_def(&'a self, f: impl FnOnce(NodeId) -> Module<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node {
-            id,
-            kind: NodeKind::Item(Item::Mod(f(id))),
-        });
+        let node = &*self.0.alloc(Node::Item(Item::Mod(f(id))));
         self.1.borrow_mut().push(node);
         node
     }
@@ -101,49 +77,43 @@ impl<'a> Nodes<'a> {
 pub struct NodeId(pub usize);
 
 #[derive(Debug)]
-pub struct Node<'a> {
-    pub id: NodeId,
-    pub kind: NodeKind<'a>,
-}
-
-#[derive(Debug)]
-pub enum NodeKind<'a> {
+pub enum Node<'a> {
     Expr(Expr<'a>),
     Item(Item<'a>),
     Ty(Ty),
 }
 
-impl<'a> NodeKind<'a> {
+impl<'a> Node<'a> {
     pub fn unwrap_item(&self) -> &Item<'a> {
-        unwrap_matches!(self, NodeKind::Item(item) => item)
+        unwrap_matches!(self, Node::Item(item) => item)
     }
 
     pub fn unwrap_expr(&self) -> &Expr<'a> {
-        unwrap_matches!(self, NodeKind::Expr(expr) => expr)
+        unwrap_matches!(self, Node::Expr(expr) => expr)
     }
 
     pub fn unwrap_fn(&self) -> &Fn<'a> {
-        unwrap_matches!(self, NodeKind::Item(Item::Fn(expr)) => expr)
+        unwrap_matches!(self, Node::Item(Item::Fn(expr)) => expr)
     }
 
     pub fn unwrap_type_def(&self) -> &TypeDef<'a> {
-        unwrap_matches!(self, NodeKind::Item(Item::TypeDef(expr)) => expr)
+        unwrap_matches!(self, Node::Item(Item::TypeDef(expr)) => expr)
     }
 
     pub fn unwrap_variant_def(&self) -> &VariantDef<'a> {
-        unwrap_matches!(self, NodeKind::Item(Item::VariantDef(expr)) => expr)
+        unwrap_matches!(self, Node::Item(Item::VariantDef(expr)) => expr)
     }
 
     pub fn unwrap_field_def(&self) -> &FieldDef<'a> {
-        unwrap_matches!(self, NodeKind::Item(Item::FieldDef(expr)) => expr)
+        unwrap_matches!(self, Node::Item(Item::FieldDef(expr)) => expr)
     }
 
     pub fn unwrap_mod(&self) -> &Module<'a> {
-        unwrap_matches!(self, NodeKind::Item(Item::Mod(expr)) => expr)
+        unwrap_matches!(self, Node::Item(Item::Mod(expr)) => expr)
     }
 
     pub fn unwrap_ty(&self) -> &Ty {
-        unwrap_matches!(self, NodeKind::Ty(expr) => expr)
+        unwrap_matches!(self, Node::Ty(expr) => expr)
     }
 }
 
