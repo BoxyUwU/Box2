@@ -188,12 +188,18 @@ fn parse_expr<'a>(
                         .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
                     let rhs = parse_expr(tok, nodes, 0)?;
 
-                    let field = nodes.push_expr(ExprKind::FieldInit(FieldInit {
-                        ident: ident.to_owned(),
-                        span: span.clone(),
-                        expr: rhs,
-                    }));
-                    fields.push(&*field);
+                    let field = nodes
+                        .push_expr_with(|id| {
+                            ExprKind::FieldInit(FieldInit {
+                                id,
+                                ident: ident.to_owned(),
+                                span: span.clone(),
+                                expr: rhs,
+                            })
+                        })
+                        .kind
+                        .unwrap_expr();
+                    fields.push(unwrap_matches!(&field.kind, ExprKind::FieldInit(init) => init));
 
                     match tok.next_if(Token::Comma) {
                         Err(_) => break,
@@ -367,7 +373,8 @@ pub fn parse_fn<'a>(
 
     let body = parse_block_expr(tok, nodes)?;
 
-    Ok(nodes.push_fn(Fn {
+    Ok(nodes.push_fn(|id| Fn {
+        id,
         visibility,
         name,
         params,
@@ -435,13 +442,14 @@ pub fn parse_type_def<'a>(
             tok.next_if(Token::RBrace)
                 .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
 
-            let variant = &*nodes.push_variant_def(VariantDef {
+            let variant = &*nodes.push_variant_def(|id| VariantDef {
+                id,
                 visibility,
                 name: Some(name),
                 type_defs: type_defs.into_boxed_slice(),
                 field_defs: field_defs.into_boxed_slice(),
             });
-            variants.push(variant);
+            variants.push(variant.kind.unwrap_variant_def());
 
             match tok.next_if(Token::Comma) {
                 Ok(_) => continue,
@@ -454,19 +462,21 @@ pub fn parse_type_def<'a>(
             type_defs,
             field_defs,
         } = parse_fields(tok, nodes)?;
-        let variant = &*nodes.push_variant_def(VariantDef {
+        let variant = &*nodes.push_variant_def(|id| VariantDef {
+            id,
             visibility,
             name: None,
             type_defs: type_defs.into_boxed_slice(),
             field_defs: field_defs.into_boxed_slice(),
         });
-        variants.push(variant);
+        variants.push(variant.kind.unwrap_variant_def());
     }
 
     tok.next_if(Token::RBrace)
         .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
 
-    let id = nodes.push_type_def(TypeDef {
+    let id = nodes.push_type_def(|id| TypeDef {
+        id,
         visibility,
         name: name.unwrap(),
         variants: variants.into_boxed_slice(),
@@ -475,8 +485,8 @@ pub fn parse_type_def<'a>(
 }
 
 struct Fields<'a> {
-    type_defs: Vec<&'a Node<'a>>,
-    field_defs: Vec<&'a Node<'a>>,
+    type_defs: Vec<&'a TypeDef<'a>>,
+    field_defs: Vec<&'a FieldDef<'a>>,
 }
 
 fn parse_fields<'a>(
@@ -501,18 +511,24 @@ fn parse_fields<'a>(
 
         let ty = match tok.peek() {
             Some((Token::Kw(Kw::Type | Kw::Pub), _)) => {
-                let ty_def_id = parse_type_def(tok, nodes, Some(name.clone()))?;
-                type_defs.push(ty_def_id);
-                ty_def_id
+                let ty_def = parse_type_def(tok, nodes, Some(name.clone()))?;
+                type_defs.push(ty_def.kind.unwrap_type_def());
+                ty_def
             }
             _ => parse_ty(tok, nodes)?,
         };
 
-        field_defs.push(&*nodes.push_field_def(FieldDef {
-            visibility,
-            name,
-            ty,
-        }));
+        field_defs.push(
+            &*nodes
+                .push_field_def(|id| FieldDef {
+                    id,
+                    visibility,
+                    name,
+                    ty,
+                })
+                .kind
+                .unwrap_field_def(),
+        );
 
         match tok.next_if(Token::Comma) {
             Ok(_) => continue,
@@ -552,7 +568,7 @@ pub fn parse_mod<'a>(
         }
         .ok_or_else(|| Diagnostic::error().with_message("unexpected end of file"))?;
 
-        let item_node_id = match &peeked.0 {
+        let item_node = match &peeked.0 {
             Token::Kw(Kw::Mod) => parse_mod(tok, nodes)?,
             Token::Kw(Kw::Type) => parse_type_def(tok, nodes, None)?,
             Token::Kw(Kw::Fn) => parse_fn(tok, nodes)?,
@@ -562,10 +578,11 @@ pub fn parse_mod<'a>(
                     .with_labels(vec![Label::primary(0, peeked.1.clone())]))
             }
         };
-        items.push(item_node_id);
+        items.push(item_node.kind.unwrap_item());
     }
 
-    Ok(nodes.push_mod_def(Module {
+    Ok(nodes.push_mod_def(|id| Module {
+        id,
         visibility,
         name: name.0.into(),
         items,
@@ -584,7 +601,7 @@ pub fn parse_crate<'a>(
         }
         .ok_or_else(|| Diagnostic::error().with_message("unexpected end of file"))?;
 
-        let item_node_id = match &peeked.0 {
+        let item_node = match &peeked.0 {
             Token::Kw(Kw::Mod) => parse_mod(tok, nodes)?,
             Token::Kw(Kw::Type) => parse_type_def(tok, nodes, None)?,
             Token::Kw(Kw::Fn) => parse_fn(tok, nodes)?,
@@ -594,10 +611,11 @@ pub fn parse_crate<'a>(
                     .with_labels(vec![Label::primary(0, peeked.1.clone())]))
             }
         };
-        items.push(item_node_id);
+        items.push(item_node.kind.unwrap_item());
     }
 
-    Ok(nodes.push_mod_def(Module {
+    Ok(nodes.push_mod_def(|id| Module {
+        id,
         visibility: Some(Visibility::Pub),
         name: "".into(),
         items,

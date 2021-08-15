@@ -34,56 +34,53 @@ impl<'ast> Resolver<'ast> {
 
     fn resolve_mod(&mut self, module: &Module) {
         use std::iter::FromIterator;
-        let bindings = HashMap::from_iter(module.items.iter().flat_map(|&node| {
-            Some(match &node.kind {
-                NodeKind::Fn(func) => (func.name.clone(), node.id),
-                NodeKind::TypeDef(ty_def) => (ty_def.name.clone(), node.id),
-                NodeKind::Mod(module) => (module.name.clone(), node.id),
-                _ => return None,
+        let bindings = HashMap::from_iter(module.items.iter().flat_map(|&item| {
+            Some(match item {
+                Item::Fn(func) => (func.name.clone(), func.id),
+                Item::TypeDef(ty_def) => (ty_def.name.clone(), ty_def.id),
+                Item::Mod(module) => (module.name.clone(), module.id),
+                Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
             })
         }));
 
         self.with_rib(Rib { bindings }, |this| {
-            for item in module.items.iter() {
-                match &item.kind {
-                    NodeKind::Fn(_) => this.resolve_fn(item),
-                    NodeKind::Mod(module) => this.resolve_mod(module),
-                    NodeKind::TypeDef(_) => this.resolve_type_def(item),
-                    _ => unreachable!(),
+            for &item in module.items.iter() {
+                match item {
+                    Item::Fn(func) => this.resolve_fn(func),
+                    Item::Mod(module) => this.resolve_mod(module),
+                    Item::TypeDef(ty_def) => this.resolve_type_def(ty_def),
+                    Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
                 }
             }
         })
     }
 
-    fn resolve_type_def(&mut self, node: &Node) {
-        let ty_def = unwrap_matches!(&node.kind, NodeKind::TypeDef(ty) => ty);
-
+    fn resolve_type_def(&mut self, ty_def: &TypeDef) {
         self.with_rib(
             Rib {
                 bindings: HashMap::new(),
             },
             |this| {
-                ty_def.variants.iter().for_each(|variant| {
-                    this.resolve_variant_def(variant.kind.unwrap_variant_def());
-                })
+                ty_def
+                    .variants
+                    .iter()
+                    .for_each(|variant| this.resolve_variant_def(variant))
             },
         );
     }
 
     fn resolve_variant_def(&mut self, node: &VariantDef) {
         use std::iter::FromIterator;
-        let bindings = HashMap::from_iter(node.type_defs.iter().map(|ty_def_node| {
-            (
-                ty_def_node.kind.unwrap_type_def().name.clone(),
-                ty_def_node.id,
-            )
-        }));
+        let bindings = HashMap::from_iter(
+            node.type_defs
+                .iter()
+                .map(|ty_def_node| (ty_def_node.name.clone(), ty_def_node.id)),
+        );
 
         self.with_rib(Rib { bindings }, |this| {
-            for &field_node in node.field_defs.iter() {
-                let field = field_node.kind.unwrap_field_def();
+            for &field in node.field_defs.iter() {
                 match &field.ty.kind {
-                    NodeKind::TypeDef(_) => this.resolve_type_def(field.ty),
+                    NodeKind::Item(Item::TypeDef(ty_def)) => this.resolve_type_def(ty_def),
                     NodeKind::Ty(Ty { path })
                     | NodeKind::Expr(Expr {
                         kind: ExprKind::Path(path),
@@ -95,12 +92,10 @@ impl<'ast> Resolver<'ast> {
         })
     }
 
-    fn resolve_fn(&mut self, node: &Node) {
-        let func = unwrap_matches!(&node.kind, NodeKind::Fn(f) => f);
-
+    fn resolve_fn(&mut self, func: &Fn) {
         self.with_rib(
             Rib {
-                bindings: HashMap::from([(func.name.clone(), node.id)]),
+                bindings: HashMap::from([(func.name.clone(), func.id)]),
             },
             |this| this.resolve_expr(func.body.kind.unwrap_expr()),
         );
@@ -140,57 +135,20 @@ impl<'ast> Resolver<'ast> {
                 let path = ty_init.path.kind.unwrap_expr();
                 self.resolve_expr(path);
 
-                for field_init_node in &ty_init.field_inits {
-                    let field_init_id = field_init_node.id;
-                    let field_init = unwrap_matches!(
-                        field_init_node.kind.unwrap_expr(),
-                        Expr {
-                            kind: ExprKind::FieldInit(f),
-                            ..
-                        } => f
-                    );
-
+                for field_init in &ty_init.field_inits {
                     self.resolve_expr(field_init.expr.kind.unwrap_expr());
 
                     if let Some(&res) = self.resolutions.get(&path.id) {
                         match &self.nodes.get(res).kind {
-                            NodeKind::TypeDef(ty_def) => {
-                                if ty_def.variants.len() > 1
-                                    || ty_def.variants[0].kind.unwrap_variant_def().name.is_some()
-                                {
-                                    let path =
-                                        unwrap_matches!(&path.kind, ExprKind::Path(path) => path);
-                                    let ty_span = path.segments.last().unwrap().1.clone();
-                                    self.errors.push(
-                                        Diagnostic::error()
-                                            .with_message("type init expr on type with variants")
-                                            .with_labels(vec![Label::primary(0, ty_span)]),
-                                    );
-                                } else {
-                                    let variant_def = ty_def.variants[0].kind.unwrap_variant_def();
-                                    let mut resolved = false;
-                                    for field in variant_def.field_defs.iter() {
-                                        if &field_init.ident == &field.kind.unwrap_field_def().name
-                                        {
-                                            self.resolutions.insert(field_init_id, field.id);
-                                            resolved = true;
-                                            break;
-                                        }
-                                    }
-
-                                    if resolved == false {
-                                        self.errors.push(diag_unresolved(
-                                            &field_init.ident,
-                                            field_init.span.clone(),
-                                        ));
-                                    }
-                                }
-                            }
-                            NodeKind::VariantDef(variant_def) => {
+                            NodeKind::Item(Item::VariantDef(variant_def))
+                            | &NodeKind::Item(Item::TypeDef(TypeDef {
+                                variants: box [variant_def @ VariantDef { name: None, .. }],
+                                ..
+                            })) => {
                                 let mut resolved = false;
                                 for field in variant_def.field_defs.iter() {
-                                    if &field_init.ident == &field.kind.unwrap_field_def().name {
-                                        self.resolutions.insert(field_init_id, field.id);
+                                    if &field_init.ident == &field.name {
+                                        self.resolutions.insert(field_init.id, field.id);
                                         resolved = true;
                                         break;
                                     }
@@ -203,13 +161,20 @@ impl<'ast> Resolver<'ast> {
                                     ));
                                 }
                             }
-                            _ => {
+                            res => {
+                                let message = match res {
+                                    NodeKind::Item(Item::TypeDef(..)) => {
+                                        "type init expr on type with variants"
+                                    }
+                                    _ => "type init expr not on a type",
+                                };
+
                                 let path =
                                     unwrap_matches!(&path.kind, ExprKind::Path(path) => path);
                                 let path_span = path.segments.last().unwrap().1.clone();
                                 self.errors.push(
                                     Diagnostic::error()
-                                        .with_message("type init expr not on a type")
+                                        .with_message(message)
                                         .with_labels(vec![Label::primary(0, path_span)]),
                                 )
                             }
@@ -254,23 +219,22 @@ impl<'ast> Resolver<'ast> {
         let mut final_res = initial_res.unwrap();
 
         if let [_, rest @ ..] = path.segments.as_slice() {
-            let item_name: for<'a> fn(&'a NodeKind<'a>) -> &'a String = |item| match item {
-                NodeKind::Mod(module) => &module.name,
-                NodeKind::Fn(func) => &func.name,
-                NodeKind::TypeDef(ty_def) => &ty_def.name,
-                NodeKind::VariantDef(variant_def) => variant_def.name.as_ref().unwrap(),
-                _ => panic!(""),
-            };
-
             let mut current_scope = initial_res.unwrap();
             for (segment, span) in rest {
-                let node = self.nodes.get(current_scope);
-                match &node.kind {
-                    NodeKind::Mod(module) => {
+                match self.nodes.get(current_scope).kind.unwrap_item() {
+                    Item::Mod(module) => {
                         let mut resolved = false;
-                        for item_node in &module.items {
-                            if &segment == &item_name(&item_node.kind) {
-                                current_scope = item_node.id;
+                        for item in &module.items {
+                            let item_name = match item {
+                                Item::Mod(module) => &module.name,
+                                Item::Fn(func) => &func.name,
+                                Item::TypeDef(ty_def) => &ty_def.name,
+                                Item::VariantDef(variant_def) => variant_def.name.as_ref().unwrap(),
+                                Item::FieldDef(..) => unreachable!(),
+                            };
+
+                            if segment == item_name {
+                                current_scope = item.id();
                                 resolved = true;
                                 break;
                             }
@@ -285,19 +249,15 @@ impl<'ast> Resolver<'ast> {
                             return;
                         }
                     }
-                    NodeKind::VariantDef(def)
-                    | NodeKind::TypeDef(TypeDef {
-                        variants:
-                            box [Node {
-                                kind: NodeKind::VariantDef(def @ VariantDef { name: None, .. }),
-                                ..
-                            }],
+                    Item::VariantDef(def)
+                    | &Item::TypeDef(TypeDef {
+                        variants: box [def @ VariantDef { name: None, .. }],
                         ..
                     }) => {
                         let mut resolved = false;
-                        for ty_node in def.type_defs.iter() {
-                            if &segment == &item_name(&ty_node.kind) {
-                                current_scope = ty_node.id;
+                        for ty_def in def.type_defs.iter() {
+                            if segment == &ty_def.name {
+                                current_scope = ty_def.id;
                                 resolved = true;
                                 break;
                             }
@@ -308,11 +268,11 @@ impl<'ast> Resolver<'ast> {
                             return;
                         }
                     }
-                    NodeKind::TypeDef(ty_def) => {
+                    Item::TypeDef(ty_def) => {
                         // variants
                         let mut resolved = false;
                         for variant in ty_def.variants.iter() {
-                            if &segment == &item_name(&variant.kind) {
+                            if segment == variant.name.as_ref().unwrap() {
                                 current_scope = variant.id;
                                 resolved = true;
                                 break;
@@ -324,7 +284,7 @@ impl<'ast> Resolver<'ast> {
                             return;
                         }
                     }
-                    _ => panic!(""),
+                    Item::FieldDef(..) | Item::Fn(..) => unreachable!(),
                 }
             }
 
@@ -598,11 +558,11 @@ mod test {
 
         let root_mod = root.kind.unwrap_mod();
 
-        let ty_def = root_mod.items[0].kind.unwrap_type_def();
-        let variant_def = ty_def.variants[0].kind.unwrap_variant_def();
+        let ty_def = unwrap_matches!(root_mod.items[0], Item::TypeDef(ty_def) => ty_def);
+        let variant_def = ty_def.variants[0];
 
         let anon_ty_id = variant_def.type_defs[0].id;
-        let other_field_def = variant_def.field_defs[1].kind.unwrap_field_def();
+        let other_field_def = variant_def.field_defs[1];
 
         assert_eq!(resolver.resolutions[&other_field_def.ty.id], anon_ty_id);
         assert_eq!(resolver.errors.len(), 0);

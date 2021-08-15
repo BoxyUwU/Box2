@@ -26,6 +26,16 @@ impl<'a> Nodes<'a> {
         node
     }
 
+    pub fn push_expr_with(&'a self, f: impl FnOnce(NodeId) -> ExprKind<'a>) -> &Node {
+        let id = NodeId(self.0.len());
+        let node = &*self.0.alloc(Node {
+            id,
+            kind: NodeKind::Expr(Expr { id, kind: f(id) }),
+        });
+        self.1.borrow_mut().push(node);
+        node
+    }
+
     pub fn push_expr(&'a self, kind: ExprKind<'a>) -> &Node {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node {
@@ -36,51 +46,51 @@ impl<'a> Nodes<'a> {
         node
     }
 
-    pub fn push_fn(&'a self, func: Fn<'a>) -> &Node {
+    pub fn push_fn(&'a self, f: impl FnOnce(NodeId) -> Fn<'a>) -> &Node {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node {
             id,
-            kind: NodeKind::Fn(func),
+            kind: NodeKind::Item(Item::Fn(f(id))),
         });
         self.1.borrow_mut().push(node);
         node
     }
 
-    pub fn push_variant_def(&'a self, def: VariantDef<'a>) -> &Node {
+    pub fn push_variant_def(&'a self, f: impl FnOnce(NodeId) -> VariantDef<'a>) -> &Node {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node {
             id,
-            kind: NodeKind::VariantDef(def),
+            kind: NodeKind::Item(Item::VariantDef(f(id))),
         });
         self.1.borrow_mut().push(node);
         node
     }
 
-    pub fn push_field_def(&'a self, def: FieldDef<'a>) -> &Node {
+    pub fn push_field_def(&'a self, f: impl FnOnce(NodeId) -> FieldDef<'a>) -> &Node {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node {
             id,
-            kind: NodeKind::FieldDef(def),
+            kind: NodeKind::Item(Item::FieldDef(f(id))),
         });
         self.1.borrow_mut().push(node);
         node
     }
 
-    pub fn push_type_def(&'a self, def: TypeDef<'a>) -> &Node {
+    pub fn push_type_def(&'a self, f: impl FnOnce(NodeId) -> TypeDef<'a>) -> &Node {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node {
             id,
-            kind: NodeKind::TypeDef(def),
+            kind: NodeKind::Item(Item::TypeDef(f(id))),
         });
         self.1.borrow_mut().push(node);
         node
     }
 
-    pub fn push_mod_def(&'a self, def: Module<'a>) -> &Node {
+    pub fn push_mod_def(&'a self, f: impl FnOnce(NodeId) -> Module<'a>) -> &Node {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node {
             id,
-            kind: NodeKind::Mod(def),
+            kind: NodeKind::Item(Item::Mod(f(id))),
         });
         self.1.borrow_mut().push(node);
         node
@@ -99,37 +109,37 @@ pub struct Node<'a> {
 #[derive(Debug)]
 pub enum NodeKind<'a> {
     Expr(Expr<'a>),
-    Fn(Fn<'a>),
-    TypeDef(TypeDef<'a>),
-    VariantDef(VariantDef<'a>),
-    FieldDef(FieldDef<'a>),
-    Mod(Module<'a>),
+    Item(Item<'a>),
     Ty(Ty),
 }
 
 impl<'a> NodeKind<'a> {
+    pub fn unwrap_item(&self) -> &Item<'a> {
+        unwrap_matches!(self, NodeKind::Item(item) => item)
+    }
+
     pub fn unwrap_expr(&self) -> &Expr<'a> {
         unwrap_matches!(self, NodeKind::Expr(expr) => expr)
     }
 
     pub fn unwrap_fn(&self) -> &Fn<'a> {
-        unwrap_matches!(self, NodeKind::Fn(expr) => expr)
+        unwrap_matches!(self, NodeKind::Item(Item::Fn(expr)) => expr)
     }
 
     pub fn unwrap_type_def(&self) -> &TypeDef<'a> {
-        unwrap_matches!(self, NodeKind::TypeDef(expr) => expr)
+        unwrap_matches!(self, NodeKind::Item(Item::TypeDef(expr)) => expr)
     }
 
     pub fn unwrap_variant_def(&self) -> &VariantDef<'a> {
-        unwrap_matches!(self, NodeKind::VariantDef(expr) => expr)
+        unwrap_matches!(self, NodeKind::Item(Item::VariantDef(expr)) => expr)
     }
 
     pub fn unwrap_field_def(&self) -> &FieldDef<'a> {
-        unwrap_matches!(self, NodeKind::FieldDef(expr) => expr)
+        unwrap_matches!(self, NodeKind::Item(Item::FieldDef(expr)) => expr)
     }
 
     pub fn unwrap_mod(&self) -> &Module<'a> {
-        unwrap_matches!(self, NodeKind::Mod(expr) => expr)
+        unwrap_matches!(self, NodeKind::Item(Item::Mod(expr)) => expr)
     }
 
     pub fn unwrap_ty(&self) -> &Ty {
@@ -140,6 +150,27 @@ impl<'a> NodeKind<'a> {
 #[derive(Debug, Copy, Clone)]
 pub enum Visibility {
     Pub,
+}
+
+#[derive(Debug)]
+pub enum Item<'a> {
+    Mod(Module<'a>),
+    VariantDef(VariantDef<'a>),
+    TypeDef(TypeDef<'a>),
+    Fn(Fn<'a>),
+    FieldDef(FieldDef<'a>),
+}
+
+impl<'a> Item<'a> {
+    pub fn id(&self) -> NodeId {
+        match self {
+            Item::Mod(module) => module.id,
+            Item::VariantDef(def) => def.id,
+            Item::TypeDef(def) => def.id,
+            Item::Fn(func) => func.id,
+            Item::FieldDef(def) => def.id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,28 +185,32 @@ pub struct Path {
 
 #[derive(Debug)]
 pub struct Module<'a> {
+    pub id: NodeId,
     pub visibility: Option<Visibility>,
     pub name: String,
-    pub items: Vec<&'a Node<'a>>,
+    pub items: Vec<&'a Item<'a>>,
 }
 
 #[derive(Debug)]
 pub struct TypeDef<'a> {
+    pub id: NodeId,
     pub visibility: Option<Visibility>,
     pub name: String,
-    pub variants: Box<[&'a Node<'a>]>,
+    pub variants: Box<[&'a VariantDef<'a>]>,
 }
 
 #[derive(Debug)]
 pub struct VariantDef<'a> {
+    pub id: NodeId,
     pub visibility: Option<Visibility>,
     pub name: Option<String>,
-    pub field_defs: Box<[&'a Node<'a>]>,
-    pub type_defs: Box<[&'a Node<'a>]>,
+    pub field_defs: Box<[&'a FieldDef<'a>]>,
+    pub type_defs: Box<[&'a TypeDef<'a>]>,
 }
 
 #[derive(Debug)]
 pub struct FieldDef<'a> {
+    pub id: NodeId,
     pub visibility: Option<Visibility>,
     pub name: String,
     pub ty: &'a Node<'a>,
@@ -183,6 +218,7 @@ pub struct FieldDef<'a> {
 
 #[derive(Debug)]
 pub struct Fn<'a> {
+    pub id: NodeId,
     pub visibility: Option<Visibility>,
     pub name: String,
     pub params: Vec<(String, &'a Node<'a>)>,
@@ -225,6 +261,7 @@ pub struct MethodCall<'a> {
 
 #[derive(Debug, Clone)]
 pub struct FieldInit<'a> {
+    pub id: NodeId,
     pub ident: String,
     pub span: Span,
     pub expr: &'a Node<'a>,
@@ -233,7 +270,7 @@ pub struct FieldInit<'a> {
 #[derive(Debug, Clone)]
 pub struct TypeInit<'a> {
     pub path: &'a Node<'a>,
-    pub field_inits: Vec<&'a Node<'a>>,
+    pub field_inits: Vec<&'a FieldInit<'a>>,
 }
 
 impl<'a> ExprKind<'a> {
