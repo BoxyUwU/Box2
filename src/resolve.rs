@@ -3,9 +3,8 @@ use codespan_reporting::diagnostic::{Diagnostic, Label};
 use crate::ast::*;
 use std::collections::HashMap;
 
-#[derive(Debug)]
 struct Resolver<'ast> {
-    nodes: &'ast Nodes,
+    nodes: &'ast Nodes<'ast>,
     resolutions: HashMap<NodeId, NodeId>,
     ribs: Vec<Rib>,
     errors: Vec<Diagnostic<usize>>,
@@ -17,7 +16,7 @@ struct Rib {
 }
 
 impl<'ast> Resolver<'ast> {
-    fn new(nodes: &'ast Nodes) -> Self {
+    fn new(nodes: &'ast Nodes<'ast>) -> Self {
         Self {
             nodes,
             resolutions: HashMap::new(),
@@ -35,23 +34,21 @@ impl<'ast> Resolver<'ast> {
 
     fn resolve_mod(&mut self, module: &Module) {
         use std::iter::FromIterator;
-        let bindings = HashMap::from_iter(module.items.iter().flat_map(|&id| {
-            let node = &self.nodes.0[id.0];
+        let bindings = HashMap::from_iter(module.items.iter().flat_map(|&node| {
             Some(match &node.kind {
-                NodeKind::Fn(func) => (func.name.clone(), id),
-                NodeKind::TypeDef(ty_def) => (ty_def.name.clone(), id),
-                NodeKind::Mod(module) => (module.name.clone(), id),
+                NodeKind::Fn(func) => (func.name.clone(), node.id),
+                NodeKind::TypeDef(ty_def) => (ty_def.name.clone(), node.id),
+                NodeKind::Mod(module) => (module.name.clone(), node.id),
                 _ => return None,
             })
         }));
 
         self.with_rib(Rib { bindings }, |this| {
-            for item_id in module.items.iter() {
-                let node = &this.nodes.0[item_id.0];
-                match &node.kind {
-                    NodeKind::Fn(_) => this.resolve_fn(node),
+            for item in module.items.iter() {
+                match &item.kind {
+                    NodeKind::Fn(_) => this.resolve_fn(item),
                     NodeKind::Mod(module) => this.resolve_mod(module),
-                    NodeKind::TypeDef(_) => this.resolve_type_def(node),
+                    NodeKind::TypeDef(_) => this.resolve_type_def(item),
                     _ => unreachable!(),
                 }
             }
@@ -66,9 +63,8 @@ impl<'ast> Resolver<'ast> {
                 bindings: HashMap::new(),
             },
             |this| {
-                ty_def.variants.iter().for_each(|id| {
-                    let variant = this.nodes.variant_def(*id);
-                    this.resolve_variant_def(variant);
+                ty_def.variants.iter().for_each(|variant| {
+                    this.resolve_variant_def(variant.kind.unwrap_variant_def());
                 })
             },
         );
@@ -76,23 +72,23 @@ impl<'ast> Resolver<'ast> {
 
     fn resolve_variant_def(&mut self, node: &VariantDef) {
         use std::iter::FromIterator;
-        let bindings = HashMap::from_iter(
-            node.type_defs
-                .iter()
-                .map(|id| (self.nodes.type_def(*id).name.clone(), *id)),
-        );
+        let bindings = HashMap::from_iter(node.type_defs.iter().map(|ty_def_node| {
+            (
+                ty_def_node.kind.unwrap_type_def().name.clone(),
+                ty_def_node.id,
+            )
+        }));
 
         self.with_rib(Rib { bindings }, |this| {
-            for &field_id in node.field_defs.iter() {
-                let field = this.nodes.field_def(field_id);
-                let node = &this.nodes.0[field.ty.0];
-                match &node.kind {
-                    NodeKind::TypeDef(_) => this.resolve_type_def(node),
+            for &field_node in node.field_defs.iter() {
+                let field = field_node.kind.unwrap_field_def();
+                match &field.ty.kind {
+                    NodeKind::TypeDef(_) => this.resolve_type_def(field.ty),
                     NodeKind::Ty(Ty { path })
                     | NodeKind::Expr(Expr {
                         kind: ExprKind::Path(path),
                         ..
-                    }) => this.resolve_path(node.id, path),
+                    }) => this.resolve_path(field.ty.id, path),
                     _ => unreachable!(),
                 }
             }
@@ -106,7 +102,7 @@ impl<'ast> Resolver<'ast> {
             Rib {
                 bindings: HashMap::from([(func.name.clone(), node.id)]),
             },
-            |this| this.resolve_expr(this.nodes.expr(func.body)),
+            |this| this.resolve_expr(func.body.kind.unwrap_expr()),
         );
     }
 
@@ -118,17 +114,17 @@ impl<'ast> Resolver<'ast> {
                 },
                 |this| {
                     for &(expr, _) in stmts {
-                        this.resolve_expr(this.nodes.expr(expr));
+                        this.resolve_expr(expr.kind.unwrap_expr());
                     }
                 },
             ),
-            ExprKind::UnOp(_, rhs) => self.resolve_expr(self.nodes.expr(*rhs)),
+            ExprKind::UnOp(_, rhs) => self.resolve_expr(rhs.kind.unwrap_expr()),
             ExprKind::BinOp(BinOp::Dot, lhs, _) => {
-                self.resolve_expr(self.nodes.expr(*lhs));
+                self.resolve_expr(lhs.kind.unwrap_expr());
             }
             ExprKind::BinOp(_, lhs, rhs) => {
-                self.resolve_expr(self.nodes.expr(*lhs));
-                self.resolve_expr(self.nodes.expr(*rhs));
+                self.resolve_expr(lhs.kind.unwrap_expr());
+                self.resolve_expr(rhs.kind.unwrap_expr());
             }
             ExprKind::Lit(_) => (),
             ExprKind::Let(name, rhs) => {
@@ -137,30 +133,30 @@ impl<'ast> Resolver<'ast> {
                     .unwrap()
                     .bindings
                     .insert(name.to_owned(), expr.id);
-                self.resolve_expr(self.nodes.expr(*rhs));
+                self.resolve_expr(rhs.kind.unwrap_expr());
             }
             ExprKind::Path(path) => self.resolve_path(expr.id, path),
             ExprKind::TypeInit(ty_init) => {
-                let path = unwrap_matches!(&self.nodes.0[ty_init.path.0].kind, NodeKind::Expr(expr) => expr);
+                let path = ty_init.path.kind.unwrap_expr();
                 self.resolve_expr(path);
 
-                for field_init_id in &ty_init.field_inits {
+                for field_init_node in &ty_init.field_inits {
+                    let field_init_id = field_init_node.id;
                     let field_init = unwrap_matches!(
-                        &self.nodes.0[field_init_id.0].kind,
-                        NodeKind::Expr(Expr {
+                        field_init_node.kind.unwrap_expr(),
+                        Expr {
                             kind: ExprKind::FieldInit(f),
                             ..
-                        }) => f
+                        } => f
                     );
 
-                    let rhs = self.nodes.expr(field_init.expr);
-                    self.resolve_expr(rhs);
+                    self.resolve_expr(field_init.expr.kind.unwrap_expr());
 
                     if let Some(&res) = self.resolutions.get(&path.id) {
-                        match &self.nodes.0[res.0].kind {
+                        match &self.nodes.get(res).kind {
                             NodeKind::TypeDef(ty_def) => {
                                 if ty_def.variants.len() > 1
-                                    || self.nodes.variant_def(ty_def.variants[0]).name.is_some()
+                                    || ty_def.variants[0].kind.unwrap_variant_def().name.is_some()
                                 {
                                     let path =
                                         unwrap_matches!(&path.kind, ExprKind::Path(path) => path);
@@ -171,11 +167,12 @@ impl<'ast> Resolver<'ast> {
                                             .with_labels(vec![Label::primary(0, ty_span)]),
                                     );
                                 } else {
-                                    let variant_def = self.nodes.variant_def(ty_def.variants[0]);
+                                    let variant_def = ty_def.variants[0].kind.unwrap_variant_def();
                                     let mut resolved = false;
-                                    for field in &variant_def.field_defs {
-                                        if &field_init.ident == &self.nodes.field_def(*field).name {
-                                            self.resolutions.insert(*field_init_id, *field);
+                                    for field in variant_def.field_defs.iter() {
+                                        if &field_init.ident == &field.kind.unwrap_field_def().name
+                                        {
+                                            self.resolutions.insert(field_init_id, field.id);
                                             resolved = true;
                                             break;
                                         }
@@ -191,9 +188,9 @@ impl<'ast> Resolver<'ast> {
                             }
                             NodeKind::VariantDef(variant_def) => {
                                 let mut resolved = false;
-                                for field in &variant_def.field_defs {
-                                    if &field_init.ident == &self.nodes.field_def(*field).name {
-                                        self.resolutions.insert(*field_init_id, *field);
+                                for field in variant_def.field_defs.iter() {
+                                    if &field_init.ident == &field.kind.unwrap_field_def().name {
+                                        self.resolutions.insert(field_init_id, field.id);
                                         resolved = true;
                                         break;
                                     }
@@ -222,15 +219,15 @@ impl<'ast> Resolver<'ast> {
             }
             ExprKind::FieldInit(..) => panic!(""),
             ExprKind::FnCall(fn_call) => {
-                self.resolve_expr(self.nodes.expr(fn_call.func));
-                for &expr_id in &fn_call.args {
-                    self.resolve_expr(self.nodes.expr(expr_id));
+                self.resolve_expr(fn_call.func.kind.unwrap_expr());
+                for expr in fn_call.args.iter().map(|arg| arg.kind.unwrap_expr()) {
+                    self.resolve_expr(expr);
                 }
             }
             ExprKind::MethodCall(method_call) => {
-                self.resolve_expr(self.nodes.expr(method_call.receiver));
-                for &expr_id in &method_call.args {
-                    self.resolve_expr(self.nodes.expr(expr_id));
+                self.resolve_expr(method_call.receiver.kind.unwrap_expr());
+                for expr in method_call.args.iter().map(|arg| arg.kind.unwrap_expr()) {
+                    self.resolve_expr(expr);
                 }
             }
         }
@@ -257,7 +254,7 @@ impl<'ast> Resolver<'ast> {
         let mut final_res = initial_res.unwrap();
 
         if let [_, rest @ ..] = path.segments.as_slice() {
-            let item_name: fn(&NodeKind) -> &String = |item| match item {
+            let item_name: for<'a> fn(&'a NodeKind<'a>) -> &'a String = |item| match item {
                 NodeKind::Mod(module) => &module.name,
                 NodeKind::Fn(func) => &func.name,
                 NodeKind::TypeDef(ty_def) => &ty_def.name,
@@ -267,12 +264,11 @@ impl<'ast> Resolver<'ast> {
 
             let mut current_scope = initial_res.unwrap();
             for (segment, span) in rest {
-                let node = &self.nodes.0[current_scope.0];
+                let node = self.nodes.get(current_scope);
                 match &node.kind {
                     NodeKind::Mod(module) => {
                         let mut resolved = false;
-                        for item in &module.items {
-                            let item_node = &self.nodes.0[item.0];
+                        for item_node in &module.items {
                             if &segment == &item_name(&item_node.kind) {
                                 current_scope = item_node.id;
                                 resolved = true;
@@ -289,35 +285,19 @@ impl<'ast> Resolver<'ast> {
                             return;
                         }
                     }
-                    NodeKind::TypeDef(ty_def) => {
-                        // single anon variant
-                        if let def @ VariantDef { name: None, .. } =
-                            self.nodes.variant_def(ty_def.variants[0])
-                        {
-                            let mut resolved = false;
-                            for ty_def_id in &def.type_defs {
-                                let ty_node = &self.nodes.0[ty_def_id.0];
-                                if &segment == &item_name(&ty_node.kind) {
-                                    current_scope = *ty_def_id;
-                                    resolved = true;
-                                    break;
-                                }
-                            }
-
-                            match resolved {
-                                false => {
-                                    self.errors.push(diag_unresolved(segment, span.clone()));
-                                    return;
-                                }
-                                true => continue,
-                            }
-                        }
-
-                        // variants
+                    NodeKind::VariantDef(def)
+                    | NodeKind::TypeDef(TypeDef {
+                        variants:
+                            box [Node {
+                                kind: NodeKind::VariantDef(def @ VariantDef { name: None, .. }),
+                                ..
+                            }],
+                        ..
+                    }) => {
                         let mut resolved = false;
-                        for variant in &ty_def.variants {
-                            if &segment == &item_name(&self.nodes.0[variant.0].kind) {
-                                current_scope = *variant;
+                        for ty_node in def.type_defs.iter() {
+                            if &segment == &item_name(&ty_node.kind) {
+                                current_scope = ty_node.id;
                                 resolved = true;
                                 break;
                             }
@@ -328,12 +308,12 @@ impl<'ast> Resolver<'ast> {
                             return;
                         }
                     }
-                    NodeKind::VariantDef(def) => {
+                    NodeKind::TypeDef(ty_def) => {
+                        // variants
                         let mut resolved = false;
-                        for ty_def_id in &def.type_defs {
-                            let ty_node = &self.nodes.0[ty_def_id.0];
-                            if &segment == &item_name(&ty_node.kind) {
-                                current_scope = *ty_def_id;
+                        for variant in ty_def.variants.iter() {
+                            if &segment == &item_name(&variant.kind) {
+                                current_scope = variant.id;
                                 resolved = true;
                                 break;
                             }
@@ -375,11 +355,11 @@ mod test {
             Foo.bar.baz.blah.aaaaa();
         }";
 
-        let mut nodes = Nodes(vec![]);
-        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+        let nodes = Nodes::new();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(nodes.mod_def(root));
+        resolver.resolve_mod(root.kind.unwrap_mod());
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -401,11 +381,11 @@ mod test {
             foo.bar(10 + 2);
         }";
 
-        let mut nodes = Nodes(vec![]);
-        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+        let nodes = Nodes::new();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(nodes.mod_def(root));
+        resolver.resolve_mod(root.kind.unwrap_mod());
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -434,11 +414,11 @@ mod test {
             foo(bar(foo()));
         }";
 
-        let mut nodes = Nodes(vec![]);
-        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+        let nodes = Nodes::new();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(nodes.mod_def(root));
+        resolver.resolve_mod(root.kind.unwrap_mod());
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -481,11 +461,11 @@ mod test {
             }
         ";
 
-        let mut nodes = Nodes(vec![]);
-        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+        let nodes = Nodes::new();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(nodes.mod_def(root));
+        resolver.resolve_mod(root.kind.unwrap_mod());
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -550,11 +530,11 @@ mod test {
             }
         ";
 
-        let mut nodes = Nodes(vec![]);
-        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+        let nodes = Nodes::new();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(nodes.mod_def(root));
+        resolver.resolve_mod(root.kind.unwrap_mod());
 
         assert_eq!(resolver.errors.len(), 0);
     }
@@ -590,18 +570,18 @@ mod test {
                 Foo::Field + 10;
                 my_module::barrrr::TyTyTy::Ffield + 10;
             }";
-        let mut nodes = Nodes(vec![]);
-        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+        let nodes = Nodes::new();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(nodes.mod_def(root));
+        resolver.resolve_mod(root.kind.unwrap_mod());
 
         assert_eq!(resolver.errors.len(), 0);
     }
 
     #[test]
     fn resolve_type_def() {
-        let mut nodes = Nodes(vec![]);
+        let nodes = Nodes::new();
         let root = crate::parser::parse_crate(
             &mut Tokenizer::new(
                 "type Foo { 
@@ -609,63 +589,67 @@ mod test {
                     other_field: Field, 
                 }",
             ),
-            &mut nodes,
+            &nodes,
         )
         .unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(nodes.mod_def(root));
+        resolver.resolve_mod(root.kind.unwrap_mod());
 
-        let root_mod = nodes.mod_def(root);
+        let root_mod = root.kind.unwrap_mod();
 
-        let ty_def = nodes.type_def(root_mod.items[0]);
-        let variant_def = nodes.variant_def(ty_def.variants[0]);
+        let ty_def = root_mod.items[0].kind.unwrap_type_def();
+        let variant_def = ty_def.variants[0].kind.unwrap_variant_def();
 
-        let anon_ty_id = variant_def.type_defs[0];
-        let other_field_def = nodes.field_def(variant_def.field_defs[1]);
+        let anon_ty_id = variant_def.type_defs[0].id;
+        let other_field_def = variant_def.field_defs[1].kind.unwrap_field_def();
 
-        assert_eq!(resolver.resolutions[&other_field_def.ty], anon_ty_id);
+        assert_eq!(resolver.resolutions[&other_field_def.ty.id], anon_ty_id);
         assert_eq!(resolver.errors.len(), 0);
     }
 
     #[test]
     fn let_stmt() {
-        let mut nodes = Nodes(vec![]);
+        let nodes = Nodes::new();
         let root = crate::parser::parse_block_expr(
             &mut Tokenizer::new("{ let foo = 10; foo + 1; }"),
-            &mut nodes,
+            &nodes,
         )
         .unwrap();
-        let stmts = unwrap_matches!(&nodes.expr(root).kind, ExprKind::Block(stmts) => stmts);
+        let stmts = unwrap_matches!(&root.kind.unwrap_expr().kind, ExprKind::Block(stmts) => stmts);
 
-        let let_id = stmts[0].0;
-        let foo_ident =
-            unwrap_matches!(&nodes.expr(stmts[1].0).kind, ExprKind::BinOp(_, lhs, _) => lhs);
+        let let_id = stmts[0].0.id;
+        let foo_ident = unwrap_matches!(
+            &stmts[1].0.kind.unwrap_expr().kind,
+            ExprKind::BinOp(_, lhs, _) => lhs.id
+        );
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_expr(nodes.expr(root));
+        resolver.resolve_expr(root.kind.unwrap_expr());
 
-        assert_eq!(resolver.resolutions[foo_ident], let_id);
+        assert_eq!(resolver.resolutions[&foo_ident], let_id);
         assert_eq!(resolver.errors.len(), 0);
     }
 
     #[test]
     fn nested_block() {
-        let mut nodes = Nodes(vec![]);
+        let nodes = Nodes::new();
         let root = crate::parser::parse_block_expr(
             &mut Tokenizer::new("{ { let foo = 1; } foo + 1; }"),
-            &mut nodes,
+            &nodes,
         )
         .unwrap();
-        let stmts = unwrap_matches!(&nodes.expr(root).kind, ExprKind::Block(stmts) => stmts);
+        let stmts = unwrap_matches!(&root.kind.unwrap_expr().kind, ExprKind::Block(stmts) => stmts);
 
-        let foo_ident =
-            unwrap_matches!(&nodes.expr(stmts[1].0).kind, ExprKind::BinOp(_, lhs, _) => lhs);
+        let foo_ident = unwrap_matches!(
+            &stmts[1].0.kind.unwrap_expr().kind,
+            ExprKind::BinOp(_, lhs, _) => lhs.id
+        );
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_expr(nodes.expr(root));
+        resolver.resolve_expr(root.kind.unwrap_expr());
 
-        assert!(resolver.resolutions.get(foo_ident).is_none());
+        assert!(resolver.resolutions.get(&foo_ident).is_none());
         assert_eq!(resolver.errors.len(), 1);
     }
 }

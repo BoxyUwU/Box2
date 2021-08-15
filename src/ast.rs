@@ -1,206 +1,89 @@
+use std::cell::RefCell;
+
 use logos::Span;
+use typed_arena::Arena;
 
 use crate::tokenize::Literal;
 
-#[derive(Debug)]
-pub struct Nodes(pub Vec<Node>);
+pub struct Nodes<'a>(Arena<Node<'a>>, RefCell<Vec<&'a Node<'a>>>);
 
-impl Nodes {
-    pub fn expr(&self, id: NodeId) -> &Expr {
-        unwrap_matches!(&self.0[id.0].kind, NodeKind::Expr(e) => e)
+impl<'a> Nodes<'a> {
+    pub fn new() -> Self {
+        Self(Arena::new(), RefCell::default())
     }
 
-    pub fn type_def(&self, id: NodeId) -> &TypeDef {
-        unwrap_matches!(&self.0[id.0].kind, NodeKind::TypeDef(def) => def)
+    pub fn get(&'a self, id: NodeId) -> &Node {
+        self.1.borrow()[id.0]
     }
 
-    pub fn variant_def(&self, id: NodeId) -> &VariantDef {
-        unwrap_matches!(&self.0[id.0].kind, NodeKind::VariantDef(def) => def)
-    }
-
-    pub fn field_def(&self, id: NodeId) -> &FieldDef {
-        unwrap_matches!(&self.0[id.0].kind, NodeKind::FieldDef(def) => def)
-    }
-
-    pub fn mod_def(&self, id: NodeId) -> &Module {
-        unwrap_matches!(&self.0[id.0].kind, NodeKind::Mod(def) => def)
-    }
-
-    pub fn ty(&self, id: NodeId) -> &Ty {
-        unwrap_matches!(&self.0[id.0].kind, NodeKind::Ty(ty) => ty)
-    }
-
-    pub fn push_ty(&mut self, ty: Ty) -> NodeId {
+    pub fn push_ty(&'a self, ty: Ty) -> &Node {
         let id = NodeId(self.0.len());
-        self.0.push(Node {
+        let node = &*self.0.alloc(Node {
             id,
             kind: NodeKind::Ty(ty),
         });
-        id
+        self.1.borrow_mut().push(node);
+        node
     }
 
-    pub fn push_expr(&mut self, kind: ExprKind) -> NodeId {
+    pub fn push_expr(&'a self, kind: ExprKind<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        self.0.push(Node {
+        let node = &*self.0.alloc(Node {
             id,
             kind: NodeKind::Expr(Expr { id, kind }),
         });
-        id
+        self.1.borrow_mut().push(node);
+        node
     }
 
-    pub fn push_fn(&mut self, func: Fn) -> NodeId {
+    pub fn push_fn(&'a self, func: Fn<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        self.0.push(Node {
+        let node = &*self.0.alloc(Node {
             id,
             kind: NodeKind::Fn(func),
         });
-        id
+        self.1.borrow_mut().push(node);
+        node
     }
 
-    pub fn push_variant_def(&mut self, def: VariantDef) -> NodeId {
+    pub fn push_variant_def(&'a self, def: VariantDef<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        self.0.push(Node {
+        let node = &*self.0.alloc(Node {
             id,
             kind: NodeKind::VariantDef(def),
         });
-        id
+        self.1.borrow_mut().push(node);
+        node
     }
 
-    pub fn push_field_def(&mut self, def: FieldDef) -> NodeId {
+    pub fn push_field_def(&'a self, def: FieldDef<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        self.0.push(Node {
+        let node = &*self.0.alloc(Node {
             id,
             kind: NodeKind::FieldDef(def),
         });
-        id
+        self.1.borrow_mut().push(node);
+        node
     }
 
-    pub fn push_type_def(&mut self, def: TypeDef) -> NodeId {
+    pub fn push_type_def(&'a self, def: TypeDef<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        self.0.push(Node {
+        let node = &*self.0.alloc(Node {
             id,
             kind: NodeKind::TypeDef(def),
         });
-        id
+        self.1.borrow_mut().push(node);
+        node
     }
 
-    pub fn push_mod_def(&mut self, def: Module) -> NodeId {
+    pub fn push_mod_def(&'a self, def: Module<'a>) -> &Node {
         let id = NodeId(self.0.len());
-        self.0.push(Node {
+        let node = &*self.0.alloc(Node {
             id,
             kind: NodeKind::Mod(def),
         });
-        id
-    }
-}
-
-impl std::fmt::Display for Nodes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0.last() {
-            Some(_) => {
-                fn print_node(
-                    f: &mut std::fmt::Formatter<'_>,
-                    nodes: &Nodes,
-                    node: NodeId,
-                ) -> std::fmt::Result {
-                    let node = &(&nodes.0[node.0]).kind;
-
-                    if let NodeKind::Expr(Expr {
-                        kind: ExprKind::Path(path),
-                        ..
-                    })
-                    | NodeKind::Ty(Ty { path }) = node
-                    {
-                        for (segment, _) in &path.segments[0..path.segments.len() - 1] {
-                            f.write_str(&segment)?;
-                            f.write_str("::")?;
-                        }
-                        f.write_str(&path.segments.last().unwrap().0)?;
-                    }
-
-                    if let NodeKind::Expr(Expr { kind, .. }) = node {
-                        let kind = kind.clone();
-                        let op_str = &kind.op_string();
-
-                        match kind {
-                            ExprKind::Lit(_) => {
-                                f.write_str(op_str)?;
-                            }
-                            ExprKind::BinOp(_, lhs, rhs) => {
-                                f.write_str("(")?;
-                                f.write_str(op_str)?;
-                                f.write_str(" ")?;
-                                print_node(f, nodes, lhs)?;
-                                f.write_str(" ")?;
-                                print_node(f, nodes, rhs)?;
-                                f.write_str(")")?;
-                            }
-                            ExprKind::UnOp(_, lhs) => {
-                                f.write_str("(")?;
-                                f.write_str(op_str)?;
-                                f.write_str(" ")?;
-                                print_node(f, nodes, lhs)?;
-                                f.write_str(")")?;
-                            }
-                            ExprKind::Block(stmts) => {
-                                f.write_str("{")?;
-                                for &(node, terminator) in &stmts {
-                                    f.write_str("\n    ")?;
-                                    print_node(f, nodes, node)?;
-                                    if terminator {
-                                        f.write_str(";")?;
-                                    }
-                                }
-                                f.write_str("\n}")?;
-                            }
-                            ExprKind::Let(name, expr) => {
-                                f.write_str("let ")?;
-                                f.write_str(&name)?;
-                                f.write_str(" = ")?;
-                                print_node(f, nodes, expr)?;
-                            }
-                            ExprKind::Path(..) => (),
-                            ExprKind::TypeInit(..) => (),
-                            ExprKind::FieldInit(..) => (),
-                            ExprKind::FnCall(..) => (),
-                            ExprKind::MethodCall(..) => (),
-                        }
-                    }
-
-                    if let NodeKind::Fn(func) = node {
-                        if let Some(visibility) = &func.visibility {
-                            match visibility {
-                                Visibility::Pub => {
-                                    f.write_str("pub ")?;
-                                }
-                            }
-                        };
-                        f.write_str("fn ")?;
-                        f.write_str(&func.name)?;
-                        f.write_str("(")?;
-                        for (param, ty) in &func.params {
-                            f.write_str(&param)?;
-                            f.write_str(": ")?;
-                            print_node(f, nodes, *ty)?;
-                            f.write_str(",")?;
-                        }
-                        f.write_str(") ")?;
-
-                        if let Some(ret_ty) = &func.ret_ty {
-                            f.write_str("-> ")?;
-                            f.write_str(&ret_ty)?;
-                            f.write_str(" ")?;
-                        }
-
-                        print_node(f, nodes, func.body)?;
-                    }
-
-                    Ok(())
-                }
-                print_node(f, self, NodeId(self.0.len() - 1))
-            }
-            None => Ok(()),
-        }
+        self.1.borrow_mut().push(node);
+        node
     }
 }
 
@@ -208,20 +91,50 @@ impl std::fmt::Display for Nodes {
 pub struct NodeId(pub usize);
 
 #[derive(Debug)]
-pub struct Node {
+pub struct Node<'a> {
     pub id: NodeId,
-    pub kind: NodeKind,
+    pub kind: NodeKind<'a>,
 }
 
 #[derive(Debug)]
-pub enum NodeKind {
-    Expr(Expr),
-    Fn(Fn),
-    TypeDef(TypeDef),
-    VariantDef(VariantDef),
-    FieldDef(FieldDef),
-    Mod(Module),
+pub enum NodeKind<'a> {
+    Expr(Expr<'a>),
+    Fn(Fn<'a>),
+    TypeDef(TypeDef<'a>),
+    VariantDef(VariantDef<'a>),
+    FieldDef(FieldDef<'a>),
+    Mod(Module<'a>),
     Ty(Ty),
+}
+
+impl<'a> NodeKind<'a> {
+    pub fn unwrap_expr(&self) -> &Expr<'a> {
+        unwrap_matches!(self, NodeKind::Expr(expr) => expr)
+    }
+
+    pub fn unwrap_fn(&self) -> &Fn<'a> {
+        unwrap_matches!(self, NodeKind::Fn(expr) => expr)
+    }
+
+    pub fn unwrap_type_def(&self) -> &TypeDef<'a> {
+        unwrap_matches!(self, NodeKind::TypeDef(expr) => expr)
+    }
+
+    pub fn unwrap_variant_def(&self) -> &VariantDef<'a> {
+        unwrap_matches!(self, NodeKind::VariantDef(expr) => expr)
+    }
+
+    pub fn unwrap_field_def(&self) -> &FieldDef<'a> {
+        unwrap_matches!(self, NodeKind::FieldDef(expr) => expr)
+    }
+
+    pub fn unwrap_mod(&self) -> &Module<'a> {
+        unwrap_matches!(self, NodeKind::Mod(expr) => expr)
+    }
+
+    pub fn unwrap_ty(&self) -> &Ty {
+        unwrap_matches!(self, NodeKind::Ty(expr) => expr)
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -240,90 +153,90 @@ pub struct Path {
 }
 
 #[derive(Debug)]
-pub struct Module {
+pub struct Module<'a> {
     pub visibility: Option<Visibility>,
     pub name: String,
-    pub items: Vec<NodeId>,
+    pub items: Vec<&'a Node<'a>>,
 }
 
 #[derive(Debug)]
-pub struct TypeDef {
+pub struct TypeDef<'a> {
     pub visibility: Option<Visibility>,
     pub name: String,
-    pub variants: Vec<NodeId>,
+    pub variants: Box<[&'a Node<'a>]>,
 }
 
 #[derive(Debug)]
-pub struct VariantDef {
+pub struct VariantDef<'a> {
     pub visibility: Option<Visibility>,
     pub name: Option<String>,
-    pub field_defs: Vec<NodeId>,
-    pub type_defs: Vec<NodeId>,
+    pub field_defs: Box<[&'a Node<'a>]>,
+    pub type_defs: Box<[&'a Node<'a>]>,
 }
 
 #[derive(Debug)]
-pub struct FieldDef {
+pub struct FieldDef<'a> {
     pub visibility: Option<Visibility>,
     pub name: String,
-    pub ty: NodeId,
+    pub ty: &'a Node<'a>,
 }
 
 #[derive(Debug)]
-pub struct Fn {
+pub struct Fn<'a> {
     pub visibility: Option<Visibility>,
     pub name: String,
-    pub params: Vec<(String, NodeId)>,
+    pub params: Vec<(String, &'a Node<'a>)>,
     pub ret_ty: Option<String>,
-    pub body: NodeId,
+    pub body: &'a Node<'a>,
 }
 
 #[derive(Debug)]
-pub struct Expr {
+pub struct Expr<'a> {
     pub id: NodeId,
-    pub kind: ExprKind,
+    pub kind: ExprKind<'a>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum ExprKind {
-    Let(String, NodeId),
-    Block(Vec<(NodeId, bool)>),
-    BinOp(BinOp, NodeId, NodeId),
-    UnOp(UnOp, NodeId),
+#[derive(Clone, Debug)]
+pub enum ExprKind<'a> {
+    Let(String, &'a Node<'a>),
+    Block(Vec<(&'a Node<'a>, bool)>),
+    BinOp(BinOp, &'a Node<'a>, &'a Node<'a>),
+    UnOp(UnOp, &'a Node<'a>),
     Lit(Literal),
     Path(Path),
-    FnCall(FnCall),
-    MethodCall(MethodCall),
-    TypeInit(TypeInit),
-    FieldInit(FieldInit),
+    FnCall(FnCall<'a>),
+    MethodCall(MethodCall<'a>),
+    TypeInit(TypeInit<'a>),
+    FieldInit(FieldInit<'a>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct FnCall {
-    pub func: NodeId,
-    pub args: Vec<NodeId>,
+#[derive(Debug, Clone)]
+pub struct FnCall<'a> {
+    pub func: &'a Node<'a>,
+    pub args: Vec<&'a Node<'a>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct MethodCall {
-    pub receiver: NodeId,
-    pub func: NodeId,
-    pub args: Vec<NodeId>,
+#[derive(Debug, Clone)]
+pub struct MethodCall<'a> {
+    pub receiver: &'a Node<'a>,
+    pub func: &'a Node<'a>,
+    pub args: Vec<&'a Node<'a>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct FieldInit {
+#[derive(Debug, Clone)]
+pub struct FieldInit<'a> {
     pub ident: String,
     pub span: Span,
-    pub expr: NodeId,
+    pub expr: &'a Node<'a>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct TypeInit {
-    pub path: NodeId,
-    pub field_inits: Vec<NodeId>,
+#[derive(Debug, Clone)]
+pub struct TypeInit<'a> {
+    pub path: &'a Node<'a>,
+    pub field_inits: Vec<&'a Node<'a>>,
 }
 
-impl ExprKind {
+impl<'a> ExprKind<'a> {
     pub fn op_string(&self) -> String {
         match self {
             ExprKind::BinOp(op, _, _) => match op {

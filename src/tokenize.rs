@@ -129,10 +129,12 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
+    #[must_use]
     pub fn peek(&mut self) -> Option<&(Token<'a>, Span)> {
         self.lex.peek()
     }
 
+    #[must_use]
     pub fn peek_second(&mut self) -> Option<&(Token<'a>, Span)> {
         self.lex.peek_second()
     }

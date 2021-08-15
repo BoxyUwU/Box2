@@ -162,9 +162,9 @@ fn diag_expected_bound<'a>(expected: &str, found: Token<'a>, span: Span) -> Diag
 
 fn parse_expr<'a>(
     tok: &mut Tokenizer<'a>,
-    nodes: &mut Nodes,
+    nodes: &'a Nodes<'a>,
     min_bp: u8,
-) -> Result<NodeId, Diagnostic<usize>> {
+) -> Result<&'a Node<'a>, Diagnostic<usize>> {
     let mut lhs = if let Ok(_) = tok.next_if(Token::LParen) {
         let inner = parse_expr(tok, nodes, 0)?;
         tok.next_if(Token::RParen)
@@ -193,7 +193,7 @@ fn parse_expr<'a>(
                         span: span.clone(),
                         expr: rhs,
                     }));
-                    fields.push(field);
+                    fields.push(&*field);
 
                     match tok.next_if(Token::Comma) {
                         Err(_) => break,
@@ -252,7 +252,7 @@ fn parse_expr<'a>(
                 }
             }
 
-            match &nodes.expr(lhs).kind {
+            match &lhs.kind.unwrap_expr().kind {
                 &ExprKind::BinOp(BinOp::Dot, receiver, func) => {
                     lhs = nodes.push_expr(ExprKind::MethodCall(MethodCall {
                         receiver,
@@ -293,8 +293,8 @@ fn parse_path<'a>(tok: &mut Tokenizer<'a>) -> Result<Path, Diagnostic<usize>> {
 
 fn parse_let_expr<'a>(
     tok: &mut Tokenizer<'a>,
-    nodes: &mut Nodes,
-) -> Result<NodeId, Diagnostic<usize>> {
+    nodes: &'a Nodes<'a>,
+) -> Result<&'a Node<'a>, Diagnostic<usize>> {
     tok.next_if(Token::Kw(Kw::Let))
         .map_err(|(found, span)| diag_expected_bound("let", found, span))?;
     let (name, _) = tok
@@ -308,8 +308,8 @@ fn parse_let_expr<'a>(
 
 pub fn parse_block_expr<'a>(
     tok: &mut Tokenizer<'a>,
-    nodes: &mut Nodes,
-) -> Result<NodeId, Diagnostic<usize>> {
+    nodes: &'a Nodes<'a>,
+) -> Result<&'a Node<'a>, Diagnostic<usize>> {
     tok.next_if(Token::LBrace)
         .map_err(|(found, span)| diag_expected_bound("{", found, span))?;
     let mut stmts = vec![];
@@ -323,8 +323,8 @@ pub fn parse_block_expr<'a>(
 
 pub fn parse_fn<'a>(
     tok: &mut Tokenizer<'a>,
-    nodes: &mut Nodes,
-) -> Result<NodeId, Diagnostic<usize>> {
+    nodes: &'a Nodes<'a>,
+) -> Result<&'a Node<'a>, Diagnostic<usize>> {
     // (pub)? fn ( (ident: ty),* ) (-> ty)? { expr }
 
     let visibility = tok
@@ -378,9 +378,9 @@ pub fn parse_fn<'a>(
 
 pub fn parse_type_def<'a>(
     tok: &mut Tokenizer<'a>,
-    nodes: &mut Nodes,
+    nodes: &'a Nodes<'a>,
     parent_field: Option<String>,
-) -> Result<NodeId, Diagnostic<usize>> {
+) -> Result<&'a Node<'a>, Diagnostic<usize>> {
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
         .ok()
@@ -435,13 +435,13 @@ pub fn parse_type_def<'a>(
             tok.next_if(Token::RBrace)
                 .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
 
-            let variant_id = nodes.push_variant_def(VariantDef {
+            let variant = &*nodes.push_variant_def(VariantDef {
                 visibility,
                 name: Some(name),
-                type_defs,
-                field_defs,
+                type_defs: type_defs.into_boxed_slice(),
+                field_defs: field_defs.into_boxed_slice(),
             });
-            variants.push(variant_id);
+            variants.push(variant);
 
             match tok.next_if(Token::Comma) {
                 Ok(_) => continue,
@@ -454,13 +454,13 @@ pub fn parse_type_def<'a>(
             type_defs,
             field_defs,
         } = parse_fields(tok, nodes)?;
-        let variant_id = nodes.push_variant_def(VariantDef {
+        let variant = &*nodes.push_variant_def(VariantDef {
             visibility,
             name: None,
-            type_defs,
-            field_defs,
+            type_defs: type_defs.into_boxed_slice(),
+            field_defs: field_defs.into_boxed_slice(),
         });
-        variants.push(variant_id);
+        variants.push(variant);
     }
 
     tok.next_if(Token::RBrace)
@@ -469,20 +469,20 @@ pub fn parse_type_def<'a>(
     let id = nodes.push_type_def(TypeDef {
         visibility,
         name: name.unwrap(),
-        variants,
+        variants: variants.into_boxed_slice(),
     });
     Ok(id)
 }
 
-struct Fields {
-    type_defs: Vec<NodeId>,
-    field_defs: Vec<NodeId>,
+struct Fields<'a> {
+    type_defs: Vec<&'a Node<'a>>,
+    field_defs: Vec<&'a Node<'a>>,
 }
 
 fn parse_fields<'a>(
     tok: &mut Tokenizer<'a>,
-    nodes: &mut Nodes,
-) -> Result<Fields, Diagnostic<usize>> {
+    nodes: &'a Nodes<'a>,
+) -> Result<Fields<'a>, Diagnostic<usize>> {
     let mut type_defs = Vec::new();
     let mut field_defs = Vec::new();
 
@@ -508,7 +508,7 @@ fn parse_fields<'a>(
             _ => parse_ty(tok, nodes)?,
         };
 
-        field_defs.push(nodes.push_field_def(FieldDef {
+        field_defs.push(&*nodes.push_field_def(FieldDef {
             visibility,
             name,
             ty,
@@ -528,8 +528,8 @@ fn parse_fields<'a>(
 
 pub fn parse_mod<'a>(
     tok: &mut Tokenizer<'a>,
-    nodes: &mut Nodes,
-) -> Result<NodeId, Diagnostic<usize>> {
+    nodes: &'a Nodes<'a>,
+) -> Result<&'a Node<'a>, Diagnostic<usize>> {
     // $(pub)? mod IDENT { $(i:item_def)* }
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
@@ -574,8 +574,8 @@ pub fn parse_mod<'a>(
 
 pub fn parse_crate<'a>(
     tok: &mut Tokenizer<'a>,
-    nodes: &mut Nodes,
-) -> Result<NodeId, Diagnostic<usize>> {
+    nodes: &'a Nodes<'a>,
+) -> Result<&'a Node<'a>, Diagnostic<usize>> {
     let mut items = Vec::new();
     while let Some(_) = tok.peek() {
         let peeked = match tok.peek_if(Token::Kw(Kw::Pub)) {
@@ -606,8 +606,8 @@ pub fn parse_crate<'a>(
 
 pub fn parse_ty<'a>(
     tok: &mut Tokenizer<'a>,
-    nodes: &mut Nodes,
-) -> Result<NodeId, Diagnostic<usize>> {
+    nodes: &'a Nodes<'a>,
+) -> Result<&'a Node<'a>, Diagnostic<usize>> {
     tok.peek_if_ident()
         .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))?;
     if let Some((Token::PathSep, _)) = tok.peek_second() {
@@ -629,17 +629,17 @@ mod test {
 
     #[test]
     fn paths() {
-        let mut nodes = Nodes(vec![]);
+        let nodes = Nodes::new();
         parse_path(&mut Tokenizer::new("Foo::Bar::Variant::Idk")).unwrap();
         parse_path(&mut Tokenizer::new("Foo::Bar")).unwrap();
         parse_path(&mut Tokenizer::new("Foo::Bar::")).unwrap_err();
         parse_path(&mut Tokenizer::new("Foo::")).unwrap_err();
-        parse_expr(&mut Tokenizer::new("Foo::Bar + 10"), &mut nodes, 0).unwrap();
+        parse_expr(&mut Tokenizer::new("Foo::Bar + 10"), &nodes, 0).unwrap();
     }
 
     #[test]
     fn crate_root_valid() {
-        let mut nodes = Nodes(vec![]);
+        let nodes = Nodes::new();
         let valid_code = [
             "mod Foo {}",
             "pub mod Foo {}",
@@ -667,7 +667,7 @@ mod test {
             "",
         ];
         for code in valid_code {
-            parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+            parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
         }
 
         let joined = "
@@ -695,12 +695,12 @@ mod test {
             fn foo() { let _ = 10; }
             pub fn baz() { let _ = 10; }
         ";
-        parse_crate(&mut Tokenizer::new(joined), &mut nodes).unwrap();
+        parse_crate(&mut Tokenizer::new(joined), &nodes).unwrap();
     }
 
     #[test]
     fn mod_defs_valid() {
-        let mut nodes = Nodes(vec![]);
+        let nodes = Nodes::new();
         let valid_code = [
             "mod Foo {}",
             "pub mod Foo {}",
@@ -725,13 +725,13 @@ mod test {
             }",
         ];
         for code in valid_code {
-            parse_mod(&mut Tokenizer::new(code), &mut nodes).unwrap();
+            parse_mod(&mut Tokenizer::new(code), &nodes).unwrap();
         }
     }
 
     #[test]
     fn mod_defs_invalid() {
-        let mut nodes = Nodes(vec![]);
+        let nodes = Nodes::new();
         let invalid_code = [
             "pub pub Foo {}",
             "mod {}",
@@ -746,13 +746,13 @@ mod test {
             }",
         ];
         for code in invalid_code {
-            parse_mod(&mut Tokenizer::new(code), &mut nodes).unwrap_err();
+            parse_mod(&mut Tokenizer::new(code), &nodes).unwrap_err();
         }
     }
 
     #[test]
     fn type_defs_valid() {
-        let mut nodes = Nodes(vec![]);
+        let nodes = Nodes::new();
         let valid_code = [
             "type Foo { field: Bar }",
             "type Foo {
@@ -794,13 +794,13 @@ mod test {
             }",
         ];
         for code in valid_code {
-            parse_type_def(&mut Tokenizer::new(code), &mut nodes, None).unwrap();
+            parse_type_def(&mut Tokenizer::new(code), &nodes, None).unwrap();
         }
     }
 
     #[test]
     fn type_defs_invalid() {
-        let mut nodes = Nodes(vec![]);
+        let nodes = Nodes::new();
         let invalid_code = [
             "type Foo {
                 | type Bar {}
@@ -816,7 +816,7 @@ mod test {
             }",
         ];
         for code in invalid_code {
-            parse_type_def(&mut Tokenizer::new(code), &mut nodes, None)
+            parse_type_def(&mut Tokenizer::new(code), &nodes, None)
                 .map(|_| panic!(""))
                 .unwrap_err();
         }
@@ -824,162 +824,68 @@ mod test {
 
     #[test]
     fn let_expr() {
-        let mut nodes = Nodes(vec![]);
-        parse_let_expr(&mut Tokenizer::new("let foo = 10 + 12"), &mut nodes).unwrap();
-        assert_eq!(&nodes.to_string(), "let foo = (+ 10 12)");
-        parse_let_expr(
-            &mut Tokenizer::new("let foo = { 10 + 12; bar }"),
-            &mut nodes,
-        )
-        .unwrap();
-        assert_eq!(
-            &nodes.to_string(),
-            r"let foo = {
-    (+ 10 12);
-    bar
-}"
-        )
+        let nodes = Nodes::new();
+        parse_let_expr(&mut Tokenizer::new("let foo = 10 + 12"), &nodes).unwrap();
+        parse_let_expr(&mut Tokenizer::new("let foo = { 10 + 12; bar }"), &nodes).unwrap();
     }
 
     #[test]
     fn block_expr() {
-        let mut nodes = Nodes(vec![]);
-        parse_block_expr(&mut Tokenizer::new("{ 10 + 14 - 2; -1; {10} }"), &mut nodes).unwrap();
-        assert_eq!(
-            &nodes.to_string(),
-            r"{
-    (- (+ 10 14) 2);
-    (- 1);
-    {
-    10
-}
-}"
-        );
+        let nodes = Nodes::new();
+        parse_block_expr(&mut Tokenizer::new("{ 10 + 14 - 2; -1; {10} }"), &nodes).unwrap();
     }
 
     #[test]
     fn fn_header() {
-        let mut nodes = Nodes(vec![]);
+        let nodes = Nodes::new();
 
         // succeeds
-        parse_fn(&mut Tokenizer::new("fn foo() { 1 }"), &mut nodes).unwrap();
-        assert_eq!(
-            &nodes.to_string(),
-            r"fn foo() {
-    1
-}"
-        );
-        parse_fn(&mut Tokenizer::new("fn foo(foo: Bar) { 1 }"), &mut nodes).unwrap();
-        assert_eq!(
-            &nodes.to_string(),
-            r"fn foo(foo: Bar,) {
-    1
-}"
-        );
-        parse_fn(&mut Tokenizer::new("fn foo() -> RetTy { 1 }"), &mut nodes).unwrap();
-        assert_eq!(
-            &nodes.to_string(),
-            r"fn foo() -> RetTy {
-    1
-}"
-        );
+        parse_fn(&mut Tokenizer::new("fn foo() { 1 }"), &nodes).unwrap();
+        parse_fn(&mut Tokenizer::new("fn foo(foo: Bar) { 1 }"), &nodes).unwrap();
+        parse_fn(&mut Tokenizer::new("fn foo() -> RetTy { 1 }"), &nodes).unwrap();
         parse_fn(
             &mut Tokenizer::new("fn foo(foo: Bar) -> RetTy { 1 }"),
-            &mut nodes,
+            &nodes,
         )
         .unwrap();
-        assert_eq!(
-            &nodes.to_string(),
-            r"fn foo(foo: Bar,) -> RetTy {
-    1
-}"
-        );
-        parse_fn(&mut Tokenizer::new("fn foo() -> RetTy { 1 }"), &mut nodes).unwrap();
-        assert_eq!(
-            &nodes.to_string(),
-            r"fn foo() -> RetTy {
-    1
-}"
-        );
+        parse_fn(&mut Tokenizer::new("fn foo() -> RetTy { 1 }"), &nodes).unwrap();
         parse_fn(
             &mut Tokenizer::new("fn foo(foo: Bar,baz: Bar,) { 1 }"),
-            &mut nodes,
+            &nodes,
         )
         .unwrap();
-        assert_eq!(
-            &nodes.to_string(),
-            r"fn foo(foo: Bar,baz: Bar,) {
-    1
-}"
-        );
 
         // fails
-        parse_fn(&mut Tokenizer::new("pub pub fn foo() { 1 }"), &mut nodes).unwrap_err();
-        parse_fn(&mut Tokenizer::new("foo() { 1 }"), &mut nodes).unwrap_err();
-        parse_fn(&mut Tokenizer::new("fn foo(foo:: Bar) { 1 }"), &mut nodes).unwrap_err();
-        parse_fn(&mut Tokenizer::new("fn foo() -> Ty Ty { 1 }"), &mut nodes).unwrap_err();
-        parse_fn(&mut Tokenizer::new("fn foo() -> { 1 }"), &mut nodes).unwrap_err();
-        parse_fn(
-            &mut Tokenizer::new("fn foo(Foo: Bar,,) -> { 1 }"),
-            &mut nodes,
-        )
-        .unwrap_err();
+        parse_fn(&mut Tokenizer::new("pub pub fn foo() { 1 }"), &nodes).unwrap_err();
+        parse_fn(&mut Tokenizer::new("foo() { 1 }"), &nodes).unwrap_err();
+        parse_fn(&mut Tokenizer::new("fn foo(foo:: Bar) { 1 }"), &nodes).unwrap_err();
+        parse_fn(&mut Tokenizer::new("fn foo() -> Ty Ty { 1 }"), &nodes).unwrap_err();
+        parse_fn(&mut Tokenizer::new("fn foo() -> { 1 }"), &nodes).unwrap_err();
+        parse_fn(&mut Tokenizer::new("fn foo(Foo: Bar,,) -> { 1 }"), &nodes).unwrap_err();
     }
 
     #[test]
     fn braces() {
-        let mut nodes = Nodes(vec![]);
-        parse_expr(&mut Tokenizer::new("1 * (2 + 3)"), &mut nodes, 0).unwrap();
-        assert_eq!(&nodes.to_string(), "(* 1 (+ 2 3))");
-
-        let mut nodes = Nodes(vec![]);
-        parse_expr(&mut Tokenizer::new("(1 + 2) * 3"), &mut nodes, 0).unwrap();
-        assert_eq!(&nodes.to_string(), "(* (+ 1 2) 3)");
-
-        let mut nodes = Nodes(vec![]);
-        parse_expr(&mut Tokenizer::new("((((((3))))))"), &mut nodes, 0).unwrap();
-        assert_eq!(&nodes.to_string(), "3");
+        let nodes = Nodes::new();
+        parse_expr(&mut Tokenizer::new("1 * (2 + 3)"), &nodes, 0).unwrap();
+        parse_expr(&mut Tokenizer::new("(1 + 2) * 3"), &nodes, 0).unwrap();
+        parse_expr(&mut Tokenizer::new("((((((3))))))"), &nodes, 0).unwrap();
     }
 
     #[test]
     fn exprs() {
-        let mut nodes = Nodes(vec![]);
-        parse_expr(&mut Tokenizer::new("1 + 2 / 3"), &mut nodes, 0).unwrap();
-        assert_eq!(&nodes.to_string(), "(+ 1 (/ 2 3))");
-
-        let mut nodes = Nodes(vec![]);
-        parse_expr(&mut Tokenizer::new("1 / 2 + 3"), &mut nodes, 0).unwrap();
-        assert_eq!(&nodes.to_string(), "(+ (/ 1 2) 3)");
-
-        let mut nodes = Nodes(vec![]);
-        parse_expr(&mut Tokenizer::new("1 + 2 - 3 + 4"), &mut nodes, 0).unwrap();
-        assert_eq!(&nodes.to_string(), "(+ (- (+ 1 2) 3) 4)");
-
-        let mut nodes = Nodes(vec![]);
-        parse_expr(
-            &mut Tokenizer::new("3 * foo.bar.baz.blah + 2"),
-            &mut nodes,
-            0,
-        )
-        .unwrap();
-        assert_eq!(
-            &nodes.to_string(),
-            "(+ (* 3 (. (. (. foo bar) baz) blah)) 2)"
-        );
+        let nodes = Nodes::new();
+        parse_expr(&mut Tokenizer::new("1 + 2 / 3"), &nodes, 0).unwrap();
+        parse_expr(&mut Tokenizer::new("1 / 2 + 3"), &nodes, 0).unwrap();
+        parse_expr(&mut Tokenizer::new("1 + 2 - 3 + 4"), &nodes, 0).unwrap();
+        parse_expr(&mut Tokenizer::new("3 * foo.bar.baz.blah + 2"), &nodes, 0).unwrap();
     }
 
     #[test]
     fn disambig_op() {
-        let mut nodes = Nodes(vec![]);
-        parse_expr(&mut Tokenizer::new("1 - 2"), &mut nodes, 0).unwrap();
-        assert_eq!(&nodes.to_string(), "(- 1 2)");
-
-        let mut nodes = Nodes(vec![]);
-        parse_expr(&mut Tokenizer::new("1 - -2"), &mut nodes, 0).unwrap();
-        assert_eq!(&nodes.to_string(), "(- 1 (- 2))");
-
-        let mut nodes = Nodes(vec![]);
-        parse_expr(&mut Tokenizer::new("-1 - -2"), &mut nodes, 0).unwrap();
-        assert_eq!(&nodes.to_string(), "(- (- 1) (- 2))");
+        let nodes = Nodes::new();
+        parse_expr(&mut Tokenizer::new("1 - 2"), &nodes, 0).unwrap();
+        parse_expr(&mut Tokenizer::new("1 - -2"), &nodes, 0).unwrap();
+        parse_expr(&mut Tokenizer::new("-1 - -2"), &nodes, 0).unwrap();
     }
 }
