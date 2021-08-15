@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use logos::Span;
 
@@ -386,7 +388,7 @@ pub fn parse_fn<'a>(
 pub fn parse_type_def<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
-    parent_field: Option<String>,
+    parent_field: Option<(String, Range<usize>)>,
 ) -> Result<&'a Node<'a>, Diagnostic<usize>> {
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
@@ -396,11 +398,14 @@ pub fn parse_type_def<'a>(
         .next_if(Token::Kw(Kw::Type))
         .map_err(|(found, span)| diag_expected_bound("type", found, span))?;
 
-    let mut name = tok.next_if_ident().ok().map(|(s, _)| s.to_string());
+    let mut name = tok
+        .next_if_ident()
+        .ok()
+        .map(|(name, span)| (name.to_string(), span));
     // type def is only permitted to not have a name if it is
     // the rhs of a field i.e. `field: type { ... }`
     if let None = name {
-        let field_name = parent_field.ok_or_else(|| {
+        let (field_name, field_name_span) = parent_field.ok_or_else(|| {
             Diagnostic::error()
                 .with_message("expected a name")
                 .with_labels(vec![Label::primary(0, type_span)])
@@ -412,7 +417,7 @@ pub fn parse_type_def<'a>(
         .to_string();
         let ty_name = heck::CamelCase::to_camel_case(&field_name[..]);
         prefix.push_str(&ty_name);
-        name = Some(prefix);
+        name = Some((prefix, field_name_span));
     }
 
     tok.next_if(Token::LBrace)
@@ -475,10 +480,12 @@ pub fn parse_type_def<'a>(
     tok.next_if(Token::RBrace)
         .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
 
+    let (name, name_span) = name.unwrap();
     let id = nodes.push_type_def(|id| TypeDef {
         id,
         visibility,
-        name: name.unwrap(),
+        name,
+        name_span,
         variants: variants.into_boxed_slice(),
     });
     Ok(id)
@@ -501,21 +508,31 @@ fn parse_fields<'a>(
             .next_if(Token::Kw(Kw::Pub))
             .ok()
             .map(|_| Visibility::Pub);
-        let name = tok
+        let (name, name_span) = tok
             .next_if_ident()
-            .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))?
-            .0
-            .to_string();
+            .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))
+            .map(|(name, span)| (name.to_string(), span))?;
         tok.next_if(Token::Colon)
             .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
 
         let ty = match tok.peek() {
             Some((Token::Kw(Kw::Type | Kw::Pub), _)) => {
-                let ty_def = parse_type_def(tok, nodes, Some(name.clone()))?;
-                type_defs.push(ty_def.kind.unwrap_type_def());
-                ty_def
+                let ty_def = parse_type_def(tok, nodes, Some((name.clone(), name_span.clone())))?
+                    .kind
+                    .unwrap_type_def();
+                type_defs.push(ty_def);
+
+                nodes
+                    .push_ty(|id| Ty {
+                        id,
+                        path: Path {
+                            segments: vec![(ty_def.name.clone(), ty_def.name_span.clone())],
+                        },
+                    })
+                    .kind
+                    .unwrap_ty()
             }
-            _ => parse_ty(tok, nodes)?,
+            _ => parse_ty(tok, nodes)?.kind.unwrap_ty(),
         };
 
         field_defs.push(
@@ -630,10 +647,11 @@ pub fn parse_ty<'a>(
         .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))?;
     if let Some((Token::PathSep, _)) = tok.peek_second() {
         let path = parse_path(tok)?;
-        Ok(nodes.push_ty(Ty { path }))
+        Ok(nodes.push_ty(|id| Ty { id, path }))
     } else {
         let (ident, span) = tok.next_if_ident().unwrap();
-        Ok(nodes.push_ty(Ty {
+        Ok(nodes.push_ty(|id| Ty {
+            id,
             path: Path {
                 segments: vec![(ident.to_string(), span)],
             },

@@ -74,22 +74,21 @@ impl<'ast> Resolver<'ast> {
         let bindings = HashMap::from_iter(
             node.type_defs
                 .iter()
-                .map(|ty_def_node| (ty_def_node.name.clone(), ty_def_node.id)),
+                .map(|type_def| (type_def.name.clone(), type_def.id)),
         );
 
         self.with_rib(Rib { bindings }, |this| {
+            for &type_def in node.type_defs.iter() {
+                this.resolve_type_def(type_def);
+            }
             for &field in node.field_defs.iter() {
-                match &field.ty.kind {
-                    NodeKind::Item(Item::TypeDef(ty_def)) => this.resolve_type_def(ty_def),
-                    NodeKind::Ty(Ty { path })
-                    | NodeKind::Expr(Expr {
-                        kind: ExprKind::Path(path),
-                        ..
-                    }) => this.resolve_path(field.ty.id, path),
-                    _ => unreachable!(),
-                }
+                this.resolve_ty(field.ty);
             }
         })
+    }
+
+    fn resolve_ty(&mut self, ty: &Ty) {
+        self.resolve_path(ty.id, &ty.path);
     }
 
     fn resolve_fn(&mut self, func: &Fn) {

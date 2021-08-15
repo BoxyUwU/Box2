@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, ops::Range};
 
 use logos::Span;
 use typed_arena::Arena;
@@ -16,11 +16,11 @@ impl<'a> Nodes<'a> {
         self.1.borrow()[id.0]
     }
 
-    pub fn push_ty(&'a self, ty: Ty) -> &Node {
+    pub fn push_ty(&'a self, f: impl FnOnce(NodeId) -> Ty) -> &Node {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node {
             id,
-            kind: NodeKind::Ty(ty),
+            kind: NodeKind::Ty(f(id)),
         });
         self.1.borrow_mut().push(node);
         node
@@ -175,6 +175,7 @@ impl<'a> Item<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ty {
+    pub id: NodeId,
     pub path: Path,
 }
 
@@ -196,6 +197,7 @@ pub struct TypeDef<'a> {
     pub id: NodeId,
     pub visibility: Option<Visibility>,
     pub name: String,
+    pub name_span: Range<usize>,
     pub variants: Box<[&'a VariantDef<'a>]>,
 }
 
@@ -213,7 +215,7 @@ pub struct FieldDef<'a> {
     pub id: NodeId,
     pub visibility: Option<Visibility>,
     pub name: String,
-    pub ty: &'a Node<'a>,
+    pub ty: &'a Ty,
 }
 
 #[derive(Debug)]
