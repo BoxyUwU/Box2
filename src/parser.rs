@@ -166,7 +166,7 @@ fn parse_expr<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
     min_bp: u8,
-) -> Result<&'a Node<'a>, Diagnostic<usize>> {
+) -> Result<&'a Expr<'a>, Diagnostic<usize>> {
     let mut lhs = if let Ok(_) = tok.next_if(Token::LParen) {
         let inner = parse_expr(tok, nodes, 0)?;
         tok.next_if(Token::RParen)
@@ -175,9 +175,15 @@ fn parse_expr<'a>(
     } else if let Some(unop) = tok.next_if_disambig_un_op() {
         let (_, r_bp) = unop.bp();
         let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
-        nodes.push_expr(ExprKind::UnOp(unop, rhs))
+        nodes
+            .push_expr(ExprKind::UnOp(unop, rhs))
+            .kind
+            .unwrap_expr()
     } else if let Ok(_) = tok.peek_if_ident() {
-        let path = nodes.push_expr(ExprKind::Path(parse_path(tok)?));
+        let path = nodes
+            .push_expr(ExprKind::Path(parse_path(tok)?))
+            .kind
+            .unwrap_expr();
 
         // handle type construction i.e.
         // `Foo { field: 10 + 1 }`
@@ -212,18 +218,21 @@ fn parse_expr<'a>(
                 tok.next_if(Token::RBrace)
                     .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
 
-                nodes.push_expr(ExprKind::TypeInit(TypeInit {
-                    path,
-                    field_inits: fields,
-                }))
+                nodes
+                    .push_expr(ExprKind::TypeInit(TypeInit {
+                        path,
+                        field_inits: fields,
+                    }))
+                    .kind
+                    .unwrap_expr()
             }
         }
     } else if let Ok((lit, _)) = tok.next_if_lit() {
-        nodes.push_expr(ExprKind::Lit(lit))
+        nodes.push_expr(ExprKind::Lit(lit)).kind.unwrap_expr()
     } else if let Ok(_) = tok.peek_if(Token::LBrace) {
-        parse_block_expr(tok, nodes)?
+        parse_block_expr(tok, nodes)?.kind.unwrap_expr()
     } else if let Ok(_) = tok.peek_if(Token::Kw(Kw::Let)) {
-        parse_let_expr(tok, nodes)?
+        parse_let_expr(tok, nodes)?.kind.unwrap_expr()
     } else {
         match tok.next() {
             None => return Err(Diagnostic::error().with_message("unexpected end of filed")),
@@ -260,26 +269,35 @@ fn parse_expr<'a>(
                 }
             }
 
-            match &lhs.kind.unwrap_expr().kind {
+            match &lhs.kind {
                 &ExprKind::BinOp(BinOp::Dot, receiver, func) => {
-                    lhs = nodes.push_expr(ExprKind::MethodCall(MethodCall {
-                        receiver,
-                        func,
-                        args: elements,
-                    }))
+                    lhs = nodes
+                        .push_expr(ExprKind::MethodCall(MethodCall {
+                            receiver,
+                            func,
+                            args: elements,
+                        }))
+                        .kind
+                        .unwrap_expr()
                 }
                 _ => {
-                    lhs = nodes.push_expr(ExprKind::FnCall(FnCall {
-                        func: lhs,
-                        args: elements,
-                    }))
+                    lhs = nodes
+                        .push_expr(ExprKind::FnCall(FnCall {
+                            func: lhs,
+                            args: elements,
+                        }))
+                        .kind
+                        .unwrap_expr()
                 }
             }
             continue;
         }
 
         let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
-        lhs = nodes.push_expr(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs));
+        lhs = nodes
+            .push_expr(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs))
+            .kind
+            .unwrap_expr();
     }
 }
 

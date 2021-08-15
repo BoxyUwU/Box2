@@ -108,17 +108,17 @@ impl<'ast> Resolver<'ast> {
                 },
                 |this| {
                     for &(expr, _) in stmts {
-                        this.resolve_expr(expr.kind.unwrap_expr());
+                        this.resolve_expr(expr);
                     }
                 },
             ),
-            ExprKind::UnOp(_, rhs) => self.resolve_expr(rhs.kind.unwrap_expr()),
+            ExprKind::UnOp(_, rhs) => self.resolve_expr(rhs),
             ExprKind::BinOp(BinOp::Dot, lhs, _) => {
-                self.resolve_expr(lhs.kind.unwrap_expr());
+                self.resolve_expr(lhs);
             }
             ExprKind::BinOp(_, lhs, rhs) => {
-                self.resolve_expr(lhs.kind.unwrap_expr());
-                self.resolve_expr(rhs.kind.unwrap_expr());
+                self.resolve_expr(lhs);
+                self.resolve_expr(rhs);
             }
             ExprKind::Lit(_) => (),
             ExprKind::Let(name, rhs) => {
@@ -127,15 +127,15 @@ impl<'ast> Resolver<'ast> {
                     .unwrap()
                     .bindings
                     .insert(name.to_owned(), expr.id);
-                self.resolve_expr(rhs.kind.unwrap_expr());
+                self.resolve_expr(rhs);
             }
             ExprKind::Path(path) => self.resolve_path(expr.id, path),
             ExprKind::TypeInit(ty_init) => {
-                let path = ty_init.path.kind.unwrap_expr();
+                let path = ty_init.path;
                 self.resolve_expr(path);
 
                 for field_init in &ty_init.field_inits {
-                    self.resolve_expr(field_init.expr.kind.unwrap_expr());
+                    self.resolve_expr(field_init.expr);
 
                     if let Some(&res) = self.resolutions.get(&path.id) {
                         match &self.nodes.get(res).kind {
@@ -183,14 +183,14 @@ impl<'ast> Resolver<'ast> {
             }
             ExprKind::FieldInit(..) => panic!(""),
             ExprKind::FnCall(fn_call) => {
-                self.resolve_expr(fn_call.func.kind.unwrap_expr());
-                for expr in fn_call.args.iter().map(|arg| arg.kind.unwrap_expr()) {
+                self.resolve_expr(fn_call.func);
+                for expr in &fn_call.args {
                     self.resolve_expr(expr);
                 }
             }
             ExprKind::MethodCall(method_call) => {
-                self.resolve_expr(method_call.receiver.kind.unwrap_expr());
-                for expr in method_call.args.iter().map(|arg| arg.kind.unwrap_expr()) {
+                self.resolve_expr(method_call.receiver);
+                for expr in &method_call.args {
                     self.resolve_expr(expr);
                 }
             }
@@ -579,7 +579,7 @@ mod test {
 
         let let_id = stmts[0].0.id;
         let foo_ident = unwrap_matches!(
-            &stmts[1].0.kind.unwrap_expr().kind,
+            &stmts[1].0.kind,
             ExprKind::BinOp(_, lhs, _) => lhs.id
         );
 
@@ -601,7 +601,7 @@ mod test {
         let stmts = unwrap_matches!(&root.kind.unwrap_expr().kind, ExprKind::Block(stmts) => stmts);
 
         let foo_ident = unwrap_matches!(
-            &stmts[1].0.kind.unwrap_expr().kind,
+            &stmts[1].0.kind,
             ExprKind::BinOp(_, lhs, _) => lhs.id
         );
 

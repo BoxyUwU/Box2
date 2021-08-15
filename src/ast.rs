@@ -236,10 +236,10 @@ pub struct Expr<'a> {
 
 #[derive(Clone, Debug)]
 pub enum ExprKind<'a> {
-    Let(String, &'a Node<'a>),
-    Block(Vec<(&'a Node<'a>, bool)>),
-    BinOp(BinOp, &'a Node<'a>, &'a Node<'a>),
-    UnOp(UnOp, &'a Node<'a>),
+    Let(String, &'a Expr<'a>),
+    Block(Vec<(&'a Expr<'a>, bool)>),
+    BinOp(BinOp, &'a Expr<'a>, &'a Expr<'a>),
+    UnOp(UnOp, &'a Expr<'a>),
     Lit(Literal),
     Path(Path),
     FnCall(FnCall<'a>),
@@ -250,15 +250,15 @@ pub enum ExprKind<'a> {
 
 #[derive(Debug, Clone)]
 pub struct FnCall<'a> {
-    pub func: &'a Node<'a>,
-    pub args: Vec<&'a Node<'a>>,
+    pub func: &'a Expr<'a>,
+    pub args: Vec<&'a Expr<'a>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct MethodCall<'a> {
-    pub receiver: &'a Node<'a>,
-    pub func: &'a Node<'a>,
-    pub args: Vec<&'a Node<'a>>,
+    pub receiver: &'a Expr<'a>,
+    pub func: &'a Expr<'a>,
+    pub args: Vec<&'a Expr<'a>>,
 }
 
 #[derive(Debug, Clone)]
@@ -266,12 +266,12 @@ pub struct FieldInit<'a> {
     pub id: NodeId,
     pub ident: String,
     pub span: Span,
-    pub expr: &'a Node<'a>,
+    pub expr: &'a Expr<'a>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TypeInit<'a> {
-    pub path: &'a Node<'a>,
+    pub path: &'a Expr<'a>,
     pub field_inits: Vec<&'a FieldInit<'a>>,
 }
 
