@@ -353,7 +353,7 @@ pub fn parse_fn<'a>(
     while let Ok((ident, _)) = tok.next_if_ident() {
         tok.next_if(Token::Colon)
             .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
-        params.push((ident.to_owned(), parse_ty(tok, nodes)?));
+        params.push((ident.to_owned(), parse_ty(tok, nodes)?.kind.unwrap_ty()));
 
         match tok.next_if(Token::Comma) {
             Ok(_) => continue,
@@ -373,8 +373,7 @@ pub fn parse_fn<'a>(
         );
     }
 
-    let body = parse_block_expr(tok, nodes)?;
-
+    let body = parse_block_expr(tok, nodes)?.kind.unwrap_expr();
     Ok(nodes.push_fn(|id| Fn {
         id,
         visibility,

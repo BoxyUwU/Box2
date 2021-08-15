@@ -223,9 +223,9 @@ pub struct Fn<'a> {
     pub id: NodeId,
     pub visibility: Option<Visibility>,
     pub name: String,
-    pub params: Vec<(String, &'a Node<'a>)>,
+    pub params: Vec<(String, &'a Ty)>,
     pub ret_ty: Option<String>,
-    pub body: &'a Node<'a>,
+    pub body: &'a Expr<'a>,
 }
 
 #[derive(Debug)]

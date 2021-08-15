@@ -96,7 +96,7 @@ impl<'ast> Resolver<'ast> {
             Rib {
                 bindings: HashMap::from([(func.name.clone(), func.id)]),
             },
-            |this| this.resolve_expr(func.body.kind.unwrap_expr()),
+            |this| this.resolve_expr(func.body),
         );
     }
 
