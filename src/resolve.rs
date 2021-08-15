@@ -123,6 +123,9 @@ impl<'ast> Resolver<'ast> {
                 },
             ),
             ExprKind::UnOp(_, rhs) => self.resolve_expr(self.nodes.expr(*rhs)),
+            ExprKind::BinOp(BinOp::Dot, lhs, _) => {
+                self.resolve_expr(self.nodes.expr(*lhs));
+            }
             ExprKind::BinOp(_, lhs, rhs) => {
                 self.resolve_expr(self.nodes.expr(*lhs));
                 self.resolve_expr(self.nodes.expr(*rhs));
@@ -221,6 +224,12 @@ impl<'ast> Resolver<'ast> {
             ExprKind::FnCall(fn_call) => {
                 self.resolve_expr(self.nodes.expr(fn_call.func));
                 for &expr_id in &fn_call.args {
+                    self.resolve_expr(self.nodes.expr(expr_id));
+                }
+            }
+            ExprKind::MethodCall(method_call) => {
+                self.resolve_expr(self.nodes.expr(method_call.receiver));
+                for &expr_id in &method_call.args {
                     self.resolve_expr(self.nodes.expr(expr_id));
                 }
             }
@@ -355,6 +364,61 @@ fn diag_unresolved(unresolved: &str, span: logos::Span) -> Diagnostic<usize> {
 #[cfg(test)]
 mod test {
     use crate::{ast::*, resolve::Resolver, tokenize::Tokenizer};
+
+    #[test]
+    fn resolve_method_call() {
+        let code = "
+        type Foo {}
+        
+        fn bar() {
+            Foo.bar(10 + 2);
+            Foo.bar.baz.blah.aaaaa();
+        }";
+
+        let mut nodes = Nodes(vec![]);
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+
+        let mut resolver = Resolver::new(&nodes);
+        resolver.resolve_mod(nodes.mod_def(root));
+
+        // for diag in resolver.errors.iter() {
+        //     let mut files = codespan_reporting::files::SimpleFiles::new();
+        //     files.add("main.box", code);
+        //     let writer = codespan_reporting::term::termcolor::StandardStream::stderr(
+        //         codespan_reporting::term::termcolor::ColorChoice::Always,
+        //     );
+        //     let config = codespan_reporting::term::Config::default();
+        //     codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+        // }
+
+        assert_eq!(resolver.errors.len(), 0);
+    }
+
+    #[test]
+    fn resolve_method_call_fail() {
+        let code = "
+        fn bar() {
+            foo.bar(10 + 2);
+        }";
+
+        let mut nodes = Nodes(vec![]);
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+
+        let mut resolver = Resolver::new(&nodes);
+        resolver.resolve_mod(nodes.mod_def(root));
+
+        // for diag in resolver.errors.iter() {
+        //     let mut files = codespan_reporting::files::SimpleFiles::new();
+        //     files.add("main.box", code);
+        //     let writer = codespan_reporting::term::termcolor::StandardStream::stderr(
+        //         codespan_reporting::term::termcolor::ColorChoice::Always,
+        //     );
+        //     let config = codespan_reporting::term::Config::default();
+        //     codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+        // }
+
+        assert_eq!(resolver.errors.len(), 1);
+    }
 
     #[test]
     fn resolve_fn_call() {

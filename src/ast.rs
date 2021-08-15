@@ -163,6 +163,7 @@ impl std::fmt::Display for Nodes {
                             ExprKind::TypeInit(..) => (),
                             ExprKind::FieldInit(..) => (),
                             ExprKind::FnCall(..) => (),
+                            ExprKind::MethodCall(..) => (),
                         }
                     }
 
@@ -291,12 +292,20 @@ pub enum ExprKind {
     Lit(Literal),
     Path(Path),
     FnCall(FnCall),
+    MethodCall(MethodCall),
     TypeInit(TypeInit),
     FieldInit(FieldInit),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnCall {
+    pub func: NodeId,
+    pub args: Vec<NodeId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodCall {
+    pub receiver: NodeId,
     pub func: NodeId,
     pub args: Vec<NodeId>,
 }
@@ -326,6 +335,7 @@ impl ExprKind {
             },
             ExprKind::UnOp(op, _) => match op {
                 UnOp::Neg => "-".into(),
+                UnOp::Call => "Call".into(),
             },
             ExprKind::Lit(l) => match l {
                 Literal::Float(f) => f.to_string(),
@@ -345,6 +355,7 @@ impl ExprKind {
             ExprKind::TypeInit(..) => "".to_string(),
             ExprKind::FieldInit(..) => "".to_string(),
             ExprKind::FnCall(..) => "".to_string(),
+            ExprKind::MethodCall(..) => "".to_string(),
         }
     }
 }
@@ -361,4 +372,5 @@ pub enum BinOp {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum UnOp {
     Neg,
+    Call,
 }

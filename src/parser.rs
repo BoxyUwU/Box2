@@ -13,9 +13,9 @@ enum Operator {
 }
 
 impl Operator {
-    fn bp(self) -> (Option<u8>, u8) {
+    fn bp(self) -> (Option<u8>, Option<u8>) {
         match self {
-            Self::BinOp(op) => op.bp(),
+            Self::BinOp(op) => (Some(op.bp().0), Some(op.bp().1)),
             Self::UnOp(op) => op.bp(),
             _ => panic!(""),
         }
@@ -54,20 +54,21 @@ impl Operator {
 
 impl BinOp {
     /// Option is always `Some`
-    fn bp(&self) -> (Option<u8>, u8) {
+    fn bp(&self) -> (u8, u8) {
         match self {
-            BinOp::Dot => (Some(13), 14),
-            BinOp::Add | BinOp::Sub => (Some(1), 2),
-            BinOp::Mul | BinOp::Div => (Some(3), 4),
+            BinOp::Dot => (13, 14),
+            BinOp::Mul | BinOp::Div => (3, 4),
+            BinOp::Add | BinOp::Sub => (1, 2),
         }
     }
 }
 
 impl UnOp {
     /// Option is always `None`
-    fn bp(&self) -> (Option<u8>, u8) {
+    fn bp(&self) -> (Option<u8>, Option<u8>) {
         match self {
-            UnOp::Neg => (None, 5),
+            UnOp::Call => (Some(11), None),
+            UnOp::Neg => (None, Some(5)),
         }
     }
 }
@@ -81,6 +82,7 @@ impl<'a> Token<'a> {
             FwdSlash => Operator::BinOp(BinOp::Div),
             Star => Operator::BinOp(BinOp::Mul),
             Dot => Operator::BinOp(BinOp::Dot),
+            LParen => Operator::UnOp(UnOp::Call),
             _ => return None,
         })
     }
@@ -163,15 +165,15 @@ fn parse_expr<'a>(
     nodes: &mut Nodes,
     min_bp: u8,
 ) -> Result<NodeId, Diagnostic<usize>> {
-    let mut lhs = if let Some(unop) = tok.next_if_disambig_un_op() {
-        let (_, r_bp) = unop.bp();
-        let rhs = parse_expr(tok, nodes, r_bp)?;
-        nodes.push_expr(ExprKind::UnOp(unop, rhs))
-    } else if let Ok(_) = tok.next_if(Token::LParen) {
+    let mut lhs = if let Ok(_) = tok.next_if(Token::LParen) {
         let inner = parse_expr(tok, nodes, 0)?;
         tok.next_if(Token::RParen)
             .map_err(|(found, span)| diag_expected_bound(")", found, span))?;
         inner
+    } else if let Some(unop) = tok.next_if_disambig_un_op() {
+        let (_, r_bp) = unop.bp();
+        let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
+        nodes.push_expr(ExprKind::UnOp(unop, rhs))
     } else if let Ok(_) = tok.peek_if_ident() {
         let path = nodes.push_expr(ExprKind::Path(parse_path(tok)?));
 
@@ -222,7 +224,19 @@ fn parse_expr<'a>(
     };
 
     loop {
-        if let Ok(_) = tok.next_if(Token::LParen) {
+        let op = match tok.peek().map(|(tok, _)| tok).and_then(Token::to_operator) {
+            Some(op) => op.disambig_bin(),
+            None => return Ok(lhs),
+        };
+        let (l_bp, r_bp) = op.bp();
+        let l_bp = l_bp.unwrap();
+
+        if l_bp < min_bp {
+            return Ok(lhs);
+        }
+        tok.next().unwrap();
+
+        if let Operator::UnOp(UnOp::Call) = op {
             let mut elements = Vec::new();
             while let Err(_) = tok.next_if(Token::RParen) {
                 elements.push(parse_expr(tok, nodes, 0)?);
@@ -238,26 +252,25 @@ fn parse_expr<'a>(
                 }
             }
 
-            lhs = nodes.push_expr(ExprKind::FnCall(FnCall {
-                func: lhs,
-                args: elements,
-            }));
+            match &nodes.expr(lhs).kind {
+                &ExprKind::BinOp(BinOp::Dot, receiver, func) => {
+                    lhs = nodes.push_expr(ExprKind::MethodCall(MethodCall {
+                        receiver,
+                        func,
+                        args: elements,
+                    }))
+                }
+                _ => {
+                    lhs = nodes.push_expr(ExprKind::FnCall(FnCall {
+                        func: lhs,
+                        args: elements,
+                    }))
+                }
+            }
             continue;
         }
 
-        let op = match tok.peek().map(|(tok, _)| tok).and_then(Token::to_operator) {
-            Some(op) => op.disambig_bin(),
-            None => return Ok(lhs),
-        };
-        let (l_bp, r_bp) = op.bp();
-        let l_bp = l_bp.unwrap();
-
-        if l_bp < min_bp {
-            return Ok(lhs);
-        }
-        tok.next().unwrap();
-
-        let rhs = parse_expr(tok, nodes, r_bp)?;
+        let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
         lhs = nodes.push_expr(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs));
     }
 }
