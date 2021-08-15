@@ -170,7 +170,7 @@ fn parse_expr<'a>(
     } else if let Ok(_) = tok.next_if(Token::LParen) {
         let inner = parse_expr(tok, nodes, 0)?;
         tok.next_if(Token::RParen)
-            .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
+            .map_err(|(found, span)| diag_expected_bound(")", found, span))?;
         inner
     } else if let Ok(_) = tok.peek_if_ident() {
         let path = nodes.push_expr(ExprKind::Path(parse_path(tok)?));
@@ -215,10 +215,36 @@ fn parse_expr<'a>(
     } else if let Ok(_) = tok.peek_if(Token::Kw(Kw::Let)) {
         parse_let_expr(tok, nodes)?
     } else {
-        return Err(Diagnostic::error());
+        match tok.next() {
+            None => return Err(Diagnostic::error().with_message("unexpected end of filed")),
+            Some((found, span)) => return Err(diag_expected_bound("EXPRESSION", found, span)),
+        }
     };
 
     loop {
+        if let Ok(_) = tok.next_if(Token::LParen) {
+            let mut elements = Vec::new();
+            while let Err(_) = tok.next_if(Token::RParen) {
+                elements.push(parse_expr(tok, nodes, 0)?);
+
+                match tok.next_if(Token::Comma) {
+                    Ok(_) => continue,
+                    Err(_) => match tok.next_if(Token::RParen) {
+                        Ok(_) => break,
+                        Err((found, span)) => {
+                            return Err(diag_expected_bound(")", found, span.clone()))
+                        }
+                    },
+                }
+            }
+
+            lhs = nodes.push_expr(ExprKind::FnCall(FnCall {
+                func: lhs,
+                args: elements,
+            }));
+            continue;
+        }
+
         let op = match tok.peek().map(|(tok, _)| tok).and_then(Token::to_operator) {
             Some(op) => op.disambig_bin(),
             None => return Ok(lhs),

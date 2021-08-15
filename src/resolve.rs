@@ -218,6 +218,12 @@ impl<'ast> Resolver<'ast> {
                 }
             }
             ExprKind::FieldInit(..) => panic!(""),
+            ExprKind::FnCall(fn_call) => {
+                self.resolve_expr(self.nodes.expr(fn_call.func));
+                for &expr_id in &fn_call.args {
+                    self.resolve_expr(self.nodes.expr(expr_id));
+                }
+            }
         }
     }
 
@@ -349,6 +355,39 @@ fn diag_unresolved(unresolved: &str, span: logos::Span) -> Diagnostic<usize> {
 #[cfg(test)]
 mod test {
     use crate::{ast::*, resolve::Resolver, tokenize::Tokenizer};
+
+    #[test]
+    fn resolve_fn_call() {
+        let code = "
+        fn foo() {
+            foo();
+            foo(1 + 2);
+            foo(1 + 2,);
+            foo(1 + 2, foo());
+        }
+        
+        fn bar() {
+            foo(bar(foo()));
+        }";
+
+        let mut nodes = Nodes(vec![]);
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &mut nodes).unwrap();
+
+        let mut resolver = Resolver::new(&nodes);
+        resolver.resolve_mod(nodes.mod_def(root));
+
+        // for diag in resolver.errors.iter() {
+        //     let mut files = codespan_reporting::files::SimpleFiles::new();
+        //     files.add("main.box", code);
+        //     let writer = codespan_reporting::term::termcolor::StandardStream::stderr(
+        //         codespan_reporting::term::termcolor::ColorChoice::Always,
+        //     );
+        //     let config = codespan_reporting::term::Config::default();
+        //     codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+        // }
+
+        assert_eq!(resolver.errors.len(), 0);
+    }
 
     #[test]
     fn resolve_type_init_fail() {
