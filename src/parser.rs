@@ -56,6 +56,7 @@ impl BinOp {
     /// Option is always `Some`
     fn bp(&self) -> (Option<u8>, u8) {
         match self {
+            BinOp::Dot => (Some(13), 14),
             BinOp::Add | BinOp::Sub => (Some(1), 2),
             BinOp::Mul | BinOp::Div => (Some(3), 4),
         }
@@ -79,6 +80,7 @@ impl<'a> Token<'a> {
             Hyphen => Operator::Ambig(BinOp::Sub, UnOp::Neg),
             FwdSlash => Operator::BinOp(BinOp::Div),
             Star => Operator::BinOp(BinOp::Mul),
+            Dot => Operator::BinOp(BinOp::Dot),
             _ => return None,
         })
     }
@@ -123,6 +125,7 @@ impl<'a> Token<'a> {
             Token::Literal(Literal::Float(f)) => f.to_string(),
             Token::Kw(kw) => kw.format_found(),
             t => match t {
+                Token::Dot => ".",
                 Token::PathSep => "::",
                 Token::Plus => "+",
                 Token::Hyphen => "-",
@@ -912,6 +915,18 @@ mod test {
         let mut nodes = Nodes(vec![]);
         parse_expr(&mut Tokenizer::new("1 + 2 - 3 + 4"), &mut nodes, 0).unwrap();
         assert_eq!(&nodes.to_string(), "(+ (- (+ 1 2) 3) 4)");
+
+        let mut nodes = Nodes(vec![]);
+        parse_expr(
+            &mut Tokenizer::new("3 * foo.bar.baz.blah + 2"),
+            &mut nodes,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            &nodes.to_string(),
+            "(+ (* 3 (. (. (. foo bar) baz) blah)) 2)"
+        );
     }
 
     #[test]

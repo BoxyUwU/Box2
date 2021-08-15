@@ -310,6 +310,7 @@ impl ExprKind {
     pub fn op_string(&self) -> String {
         match self {
             ExprKind::BinOp(op, _, _) => match op {
+                BinOp::Dot => ".".into(),
                 BinOp::Add => "+".into(),
                 BinOp::Sub => "-".into(),
                 BinOp::Div => "/".into(),
@@ -345,6 +346,7 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    Dot,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]

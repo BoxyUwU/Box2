@@ -42,6 +42,8 @@ pub enum Token<'a> {
     Star,
     #[token("/")]
     FwdSlash,
+    #[token(".")]
+    Dot,
 
     #[token("mod", |_| Kw::Mod)]
     #[token("let", |_| Kw::Let)]
