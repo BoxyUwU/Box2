@@ -318,7 +318,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.unwrap_mod());
+        resolver.resolve_mod(root);
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -344,7 +344,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.unwrap_mod());
+        resolver.resolve_mod(root);
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -377,7 +377,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.unwrap_mod());
+        resolver.resolve_mod(root);
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -424,7 +424,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.unwrap_mod());
+        resolver.resolve_mod(root);
 
         // for diag in resolver.errors.iter() {
         //     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -493,7 +493,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.unwrap_mod());
+        resolver.resolve_mod(root);
 
         assert_eq!(resolver.errors.len(), 0);
     }
@@ -533,7 +533,7 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.unwrap_mod());
+        resolver.resolve_mod(root);
 
         assert_eq!(resolver.errors.len(), 0);
     }
@@ -553,11 +553,9 @@ mod test {
         .unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_mod(root.unwrap_mod());
+        resolver.resolve_mod(root);
 
-        let root_mod = root.unwrap_mod();
-
-        let ty_def = unwrap_matches!(root_mod.items[0], Item::TypeDef(ty_def) => ty_def);
+        let ty_def = unwrap_matches!(root.items[0], Item::TypeDef(ty_def) => ty_def);
         let variant_def = ty_def.variants[0];
 
         let anon_ty_id = variant_def.type_defs[0].id;
@@ -575,7 +573,7 @@ mod test {
             &nodes,
         )
         .unwrap();
-        let stmts = unwrap_matches!(&root.unwrap_expr().kind, ExprKind::Block(stmts) => stmts);
+        let stmts = unwrap_matches!(&root.kind, ExprKind::Block(stmts) => stmts);
 
         let let_id = stmts[0].0.id;
         let foo_ident = unwrap_matches!(
@@ -584,7 +582,7 @@ mod test {
         );
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_expr(root.unwrap_expr());
+        resolver.resolve_expr(root);
 
         assert_eq!(resolver.resolutions[&foo_ident], let_id);
         assert_eq!(resolver.errors.len(), 0);
@@ -598,7 +596,7 @@ mod test {
             &nodes,
         )
         .unwrap();
-        let stmts = unwrap_matches!(&root.unwrap_expr().kind, ExprKind::Block(stmts) => stmts);
+        let stmts = unwrap_matches!(&root.kind, ExprKind::Block(stmts) => stmts);
 
         let foo_ident = unwrap_matches!(
             &stmts[1].0.kind,
@@ -606,7 +604,7 @@ mod test {
         );
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_expr(root.unwrap_expr());
+        resolver.resolve_expr(root);
 
         assert!(resolver.resolutions.get(&foo_ident).is_none());
         assert_eq!(resolver.errors.len(), 1);

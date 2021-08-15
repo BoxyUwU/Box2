@@ -16,60 +16,60 @@ impl<'a> Nodes<'a> {
         self.1.borrow()[id.0]
     }
 
-    pub fn push_ty(&'a self, f: impl FnOnce(NodeId) -> Ty) -> &Node {
+    pub fn push_ty(&'a self, f: impl FnOnce(NodeId) -> Ty) -> &Ty {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node::Ty(f(id)));
         self.1.borrow_mut().push(node);
-        node
+        node.unwrap_ty()
     }
 
-    pub fn push_expr_with(&'a self, f: impl FnOnce(NodeId) -> ExprKind<'a>) -> &Node {
+    pub fn push_expr_with(&'a self, f: impl FnOnce(NodeId) -> ExprKind<'a>) -> &Expr {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node::Expr(Expr { id, kind: f(id) }));
         self.1.borrow_mut().push(node);
-        node
+        node.unwrap_expr()
     }
 
-    pub fn push_expr(&'a self, kind: ExprKind<'a>) -> &Node {
+    pub fn push_expr(&'a self, kind: ExprKind<'a>) -> &Expr {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node::Expr(Expr { id, kind }));
         self.1.borrow_mut().push(node);
-        node
+        node.unwrap_expr()
     }
 
-    pub fn push_fn(&'a self, f: impl FnOnce(NodeId) -> Fn<'a>) -> &Node {
+    pub fn push_fn(&'a self, f: impl FnOnce(NodeId) -> Fn<'a>) -> &Item {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node::Item(Item::Fn(f(id))));
         self.1.borrow_mut().push(node);
-        node
+        node.unwrap_item()
     }
 
-    pub fn push_variant_def(&'a self, f: impl FnOnce(NodeId) -> VariantDef<'a>) -> &Node {
+    pub fn push_variant_def(&'a self, f: impl FnOnce(NodeId) -> VariantDef<'a>) -> &VariantDef {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node::Item(Item::VariantDef(f(id))));
         self.1.borrow_mut().push(node);
-        node
+        node.unwrap_variant_def()
     }
 
-    pub fn push_field_def(&'a self, f: impl FnOnce(NodeId) -> FieldDef<'a>) -> &Node {
+    pub fn push_field_def(&'a self, f: impl FnOnce(NodeId) -> FieldDef<'a>) -> &FieldDef {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node::Item(Item::FieldDef(f(id))));
         self.1.borrow_mut().push(node);
-        node
+        node.unwrap_field_def()
     }
 
-    pub fn push_type_def(&'a self, f: impl FnOnce(NodeId) -> TypeDef<'a>) -> &Node {
+    pub fn push_type_def(&'a self, f: impl FnOnce(NodeId) -> TypeDef<'a>) -> &Item {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node::Item(Item::TypeDef(f(id))));
         self.1.borrow_mut().push(node);
-        node
+        node.unwrap_item()
     }
 
-    pub fn push_mod_def(&'a self, f: impl FnOnce(NodeId) -> Module<'a>) -> &Node {
+    pub fn push_mod_def(&'a self, f: impl FnOnce(NodeId) -> Module<'a>) -> &Item {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node::Item(Item::Mod(f(id))));
         self.1.borrow_mut().push(node);
-        node
+        node.unwrap_item()
     }
 }
 
@@ -114,6 +114,28 @@ impl<'a> Node<'a> {
 
     pub fn unwrap_ty(&self) -> &Ty {
         unwrap_matches!(self, Node::Ty(expr) => expr)
+    }
+}
+
+impl<'a> Item<'a> {
+    pub fn unwrap_fn(&self) -> &Fn<'a> {
+        unwrap_matches!(self, Item::Fn(expr) => expr)
+    }
+
+    pub fn unwrap_type_def(&self) -> &TypeDef<'a> {
+        unwrap_matches!(self, Item::TypeDef(expr) => expr)
+    }
+
+    pub fn unwrap_variant_def(&self) -> &VariantDef<'a> {
+        unwrap_matches!(self, Item::VariantDef(expr) => expr)
+    }
+
+    pub fn unwrap_field_def(&self) -> &FieldDef<'a> {
+        unwrap_matches!(self, Item::FieldDef(expr) => expr)
+    }
+
+    pub fn unwrap_mod(&self) -> &Module<'a> {
+        unwrap_matches!(self, Item::Mod(expr) => expr)
     }
 }
 

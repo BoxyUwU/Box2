@@ -175,11 +175,9 @@ fn parse_expr<'a>(
     } else if let Some(unop) = tok.next_if_disambig_un_op() {
         let (_, r_bp) = unop.bp();
         let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
-        nodes.push_expr(ExprKind::UnOp(unop, rhs)).unwrap_expr()
+        nodes.push_expr(ExprKind::UnOp(unop, rhs))
     } else if let Ok(_) = tok.peek_if_ident() {
-        let path = nodes
-            .push_expr(ExprKind::Path(parse_path(tok)?))
-            .unwrap_expr();
+        let path = nodes.push_expr(ExprKind::Path(parse_path(tok)?));
 
         // handle type construction i.e.
         // `Foo { field: 10 + 1 }`
@@ -192,16 +190,14 @@ fn parse_expr<'a>(
                         .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
                     let rhs = parse_expr(tok, nodes, 0)?;
 
-                    let field = nodes
-                        .push_expr_with(|id| {
-                            ExprKind::FieldInit(FieldInit {
-                                id,
-                                ident: ident.to_owned(),
-                                span: span.clone(),
-                                expr: rhs,
-                            })
+                    let field = nodes.push_expr_with(|id| {
+                        ExprKind::FieldInit(FieldInit {
+                            id,
+                            ident: ident.to_owned(),
+                            span: span.clone(),
+                            expr: rhs,
                         })
-                        .unwrap_expr();
+                    });
                     fields.push(unwrap_matches!(&field.kind, ExprKind::FieldInit(init) => init));
 
                     match tok.next_if(Token::Comma) {
@@ -213,20 +209,18 @@ fn parse_expr<'a>(
                 tok.next_if(Token::RBrace)
                     .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
 
-                nodes
-                    .push_expr(ExprKind::TypeInit(TypeInit {
-                        path,
-                        field_inits: fields,
-                    }))
-                    .unwrap_expr()
+                nodes.push_expr(ExprKind::TypeInit(TypeInit {
+                    path,
+                    field_inits: fields,
+                }))
             }
         }
     } else if let Ok((lit, _)) = tok.next_if_lit() {
-        nodes.push_expr(ExprKind::Lit(lit)).unwrap_expr()
+        nodes.push_expr(ExprKind::Lit(lit))
     } else if let Ok(_) = tok.peek_if(Token::LBrace) {
-        parse_block_expr(tok, nodes)?.unwrap_expr()
+        parse_block_expr(tok, nodes)?
     } else if let Ok(_) = tok.peek_if(Token::Kw(Kw::Let)) {
-        parse_let_expr(tok, nodes)?.unwrap_expr()
+        parse_let_expr(tok, nodes)?
     } else {
         match tok.next() {
             None => return Err(Diagnostic::error().with_message("unexpected end of filed")),
@@ -265,30 +259,24 @@ fn parse_expr<'a>(
 
             match &lhs.kind {
                 &ExprKind::BinOp(BinOp::Dot, receiver, func) => {
-                    lhs = nodes
-                        .push_expr(ExprKind::MethodCall(MethodCall {
-                            receiver,
-                            func,
-                            args: elements,
-                        }))
-                        .unwrap_expr()
+                    lhs = nodes.push_expr(ExprKind::MethodCall(MethodCall {
+                        receiver,
+                        func,
+                        args: elements,
+                    }))
                 }
                 _ => {
-                    lhs = nodes
-                        .push_expr(ExprKind::FnCall(FnCall {
-                            func: lhs,
-                            args: elements,
-                        }))
-                        .unwrap_expr()
+                    lhs = nodes.push_expr(ExprKind::FnCall(FnCall {
+                        func: lhs,
+                        args: elements,
+                    }))
                 }
             }
             continue;
         }
 
         let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
-        lhs = nodes
-            .push_expr(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs))
-            .unwrap_expr();
+        lhs = nodes.push_expr(ExprKind::BinOp(op.binop().unwrap(), lhs, rhs));
     }
 }
 
@@ -311,7 +299,7 @@ fn parse_path<'a>(tok: &mut Tokenizer<'a>) -> Result<Path, Diagnostic<usize>> {
 fn parse_let_expr<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
-) -> Result<&'a Node<'a>, Diagnostic<usize>> {
+) -> Result<&'a Expr<'a>, Diagnostic<usize>> {
     tok.next_if(Token::Kw(Kw::Let))
         .map_err(|(found, span)| diag_expected_bound("let", found, span))?;
     let (name, _) = tok
@@ -326,7 +314,7 @@ fn parse_let_expr<'a>(
 pub fn parse_block_expr<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
-) -> Result<&'a Node<'a>, Diagnostic<usize>> {
+) -> Result<&'a Expr<'a>, Diagnostic<usize>> {
     tok.next_if(Token::LBrace)
         .map_err(|(found, span)| diag_expected_bound("{", found, span))?;
     let mut stmts = vec![];
@@ -341,7 +329,7 @@ pub fn parse_block_expr<'a>(
 pub fn parse_fn<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
-) -> Result<&'a Node<'a>, Diagnostic<usize>> {
+) -> Result<&'a Item<'a>, Diagnostic<usize>> {
     // (pub)? fn ( (ident: ty),* ) (-> ty)? { expr }
 
     let visibility = tok
@@ -362,7 +350,7 @@ pub fn parse_fn<'a>(
     while let Ok((ident, _)) = tok.next_if_ident() {
         tok.next_if(Token::Colon)
             .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
-        params.push((ident.to_owned(), parse_ty(tok, nodes)?.unwrap_ty()));
+        params.push((ident.to_owned(), parse_ty(tok, nodes)?));
 
         match tok.next_if(Token::Comma) {
             Ok(_) => continue,
@@ -382,7 +370,7 @@ pub fn parse_fn<'a>(
         );
     }
 
-    let body = parse_block_expr(tok, nodes)?.unwrap_expr();
+    let body = parse_block_expr(tok, nodes)?;
     Ok(nodes.push_fn(|id| Fn {
         id,
         visibility,
@@ -397,7 +385,7 @@ pub fn parse_type_def<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
     parent_field: Option<(String, Range<usize>)>,
-) -> Result<&'a Node<'a>, Diagnostic<usize>> {
+) -> Result<&'a Item<'a>, Diagnostic<usize>> {
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
         .ok()
@@ -462,7 +450,7 @@ pub fn parse_type_def<'a>(
                 type_defs: type_defs.into_boxed_slice(),
                 field_defs: field_defs.into_boxed_slice(),
             });
-            variants.push(variant.unwrap_variant_def());
+            variants.push(variant);
 
             match tok.next_if(Token::Comma) {
                 Ok(_) => continue,
@@ -482,21 +470,21 @@ pub fn parse_type_def<'a>(
             type_defs: type_defs.into_boxed_slice(),
             field_defs: field_defs.into_boxed_slice(),
         });
-        variants.push(variant.unwrap_variant_def());
+        variants.push(variant);
     }
 
     tok.next_if(Token::RBrace)
         .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
 
     let (name, name_span) = name.unwrap();
-    let id = nodes.push_type_def(|id| TypeDef {
+    let item = nodes.push_type_def(|id| TypeDef {
         id,
         visibility,
         name,
         name_span,
         variants: variants.into_boxed_slice(),
     });
-    Ok(id)
+    Ok(item)
 }
 
 struct Fields<'a> {
@@ -529,28 +517,22 @@ fn parse_fields<'a>(
                     .unwrap_type_def();
                 type_defs.push(ty_def);
 
-                nodes
-                    .push_ty(|id| Ty {
-                        id,
-                        path: Path {
-                            segments: vec![(ty_def.name.clone(), ty_def.name_span.clone())],
-                        },
-                    })
-                    .unwrap_ty()
+                nodes.push_ty(|id| Ty {
+                    id,
+                    path: Path {
+                        segments: vec![(ty_def.name.clone(), ty_def.name_span.clone())],
+                    },
+                })
             }
-            _ => parse_ty(tok, nodes)?.unwrap_ty(),
+            _ => parse_ty(tok, nodes)?,
         };
 
-        field_defs.push(
-            &*nodes
-                .push_field_def(|id| FieldDef {
-                    id,
-                    visibility,
-                    name,
-                    ty,
-                })
-                .unwrap_field_def(),
-        );
+        field_defs.push(&*nodes.push_field_def(|id| FieldDef {
+            id,
+            visibility,
+            name,
+            ty,
+        }));
 
         match tok.next_if(Token::Comma) {
             Ok(_) => continue,
@@ -567,7 +549,7 @@ fn parse_fields<'a>(
 pub fn parse_mod<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
-) -> Result<&'a Node<'a>, Diagnostic<usize>> {
+) -> Result<&'a Item<'a>, Diagnostic<usize>> {
     // $(pub)? mod IDENT { $(i:item_def)* }
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
@@ -600,7 +582,7 @@ pub fn parse_mod<'a>(
                     .with_labels(vec![Label::primary(0, peeked.1.clone())]))
             }
         };
-        items.push(item_node.unwrap_item());
+        items.push(item_node);
     }
 
     Ok(nodes.push_mod_def(|id| Module {
@@ -614,7 +596,7 @@ pub fn parse_mod<'a>(
 pub fn parse_crate<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
-) -> Result<&'a Node<'a>, Diagnostic<usize>> {
+) -> Result<&'a Module<'a>, Diagnostic<usize>> {
     let mut items = Vec::new();
     while let Some(_) = tok.peek() {
         let peeked = match tok.peek_if(Token::Kw(Kw::Pub)) {
@@ -633,21 +615,23 @@ pub fn parse_crate<'a>(
                     .with_labels(vec![Label::primary(0, peeked.1.clone())]))
             }
         };
-        items.push(item_node.unwrap_item());
+        items.push(item_node);
     }
 
-    Ok(nodes.push_mod_def(|id| Module {
-        id,
-        visibility: Some(Visibility::Pub),
-        name: "".into(),
-        items,
-    }))
+    Ok(nodes
+        .push_mod_def(|id| Module {
+            id,
+            visibility: Some(Visibility::Pub),
+            name: "".into(),
+            items,
+        })
+        .unwrap_mod())
 }
 
 pub fn parse_ty<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
-) -> Result<&'a Node<'a>, Diagnostic<usize>> {
+) -> Result<&'a Ty, Diagnostic<usize>> {
     tok.peek_if_ident()
         .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))?;
     if let Some((Token::PathSep, _)) = tok.peek_second() {
