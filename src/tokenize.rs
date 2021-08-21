@@ -1,6 +1,28 @@
 use logos::Logos;
 use std::{ops::Range, str::FromStr};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// Range<usize> is not copy >:(
+pub struct Span {
+    start: usize,
+    end: usize,
+}
+
+impl Span {
+    pub fn new(range: Range<usize>) -> Self {
+        Self {
+            start: range.start,
+            end: range.end,
+        }
+    }
+}
+
+impl Into<Range<usize>> for Span {
+    fn into(self) -> Range<usize> {
+        self.start..self.end
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Literal {
     Float(f64),
@@ -86,6 +108,17 @@ struct PeekableTwo<I: Iterator> {
     peeked: [Option<I::Item>; 2],
 }
 
+impl<I: Iterator> Iterator for PeekableTwo<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.peek()?;
+        let [first, second] = &mut self.peeked;
+        std::mem::swap(first, second);
+        second.take()
+    }
+}
+
 impl<I: Iterator> PeekableTwo<I> {
     pub fn new(iter: I) -> Self {
         Self {
@@ -108,24 +141,23 @@ impl<I: Iterator> PeekableTwo<I> {
         }
         self.peeked[1].as_ref()
     }
-
-    pub fn next(&mut self) -> Option<I::Item> {
-        self.peek()?;
-        let [first, second] = &mut self.peeked;
-        std::mem::swap(first, second);
-        second.take()
-    }
 }
 
-type Span = Range<usize>;
+type MappedSpannedIter<'a> = impl Iterator<Item = (Token<'a>, Span)>;
+
 pub struct Tokenizer<'a> {
-    lex: PeekableTwo<logos::SpannedIter<'a, Token<'a>>>,
+    lex: PeekableTwo<MappedSpannedIter<'a>>,
 }
 
 impl<'a> Tokenizer<'a> {
     pub fn new(src: &'a str) -> Self {
+        fn defining_use<'b>(src: &'b str) -> MappedSpannedIter<'b> {
+            Token::lexer(src)
+                .spanned()
+                .map(|(tok, span)| (tok, Span::new(span)))
+        }
         Self {
-            lex: PeekableTwo::new(Token::lexer(src).spanned()),
+            lex: PeekableTwo::new(defining_use(src)),
         }
     }
 
@@ -147,17 +179,17 @@ impl<'a> Tokenizer<'a> {
                 self.next().unwrap();
                 Ok((expected, span))
             }
-            Some(r) => Err(r.clone()),
-            _ => Err((Token::Error, 0..0)),
+            Some(r) => Err(*r),
+            _ => Err((Token::Error, Span::new(0..0))),
         }
     }
 
     #[must_use]
     pub fn peek_if(&mut self, expected: Token<'a>) -> Result<(Token<'a>, Span), (Token<'a>, Span)> {
         match self.peek() {
-            Some((tok, span)) if tok == &expected => Ok((expected, span.clone())),
-            Some(r) => Err(r.clone()),
-            _ => Err((Token::Error, 0..0)),
+            Some((tok, span)) if tok == &expected => Ok((expected, *span)),
+            Some(r) => Err(*r),
+            _ => Err((Token::Error, Span::new(0..0))),
         }
     }
 
@@ -167,17 +199,17 @@ impl<'a> Tokenizer<'a> {
             Some((Token::Ident(_), _)) => {
                 Ok(unwrap_matches!(self.next(), Some((Token::Ident(ident), span)) => (ident, span)))
             }
-            Some(r) => Err(r.clone()),
-            _ => Err((Token::Error, 0..0)),
+            Some(r) => Err(*r),
+            _ => Err((Token::Error, Span::new(0..0))),
         }
     }
 
     #[must_use]
     pub fn peek_if_ident(&mut self) -> Result<(&'a str, Span), (Token<'a>, Span)> {
         match self.peek() {
-            Some((Token::Ident(ident), span)) => Ok((ident, span.clone())),
-            Some(r) => Err(r.clone()),
-            _ => Err((Token::Error, 0..0)),
+            Some((Token::Ident(ident), span)) => Ok((ident, *span)),
+            Some(r) => Err(*r),
+            _ => Err((Token::Error, Span::new(0..0))),
         }
     }
 
@@ -187,8 +219,8 @@ impl<'a> Tokenizer<'a> {
             Some((Token::Literal(_), _)) => {
                 unwrap_matches!(self.next(), Some((Token::Literal(l), span)) => Ok((l, span)))
             }
-            Some(r) => Err(r.clone()),
-            _ => Err((Token::Error, 0..0)),
+            Some(r) => Err(*r),
+            _ => Err((Token::Error, Span::new(0..0))),
         }
     }
 }

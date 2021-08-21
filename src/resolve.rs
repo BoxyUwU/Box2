@@ -1,6 +1,7 @@
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 
 use crate::ast::*;
+use crate::tokenize::Span;
 use std::collections::HashMap;
 
 struct Resolver<'ast> {
@@ -36,9 +37,9 @@ impl<'ast> Resolver<'ast> {
         use std::iter::FromIterator;
         let bindings = HashMap::from_iter(module.items.iter().flat_map(|&item| {
             Some(match item {
-                Item::Fn(func) => (func.name.clone(), func.id),
-                Item::TypeDef(ty_def) => (ty_def.name.clone(), ty_def.id),
-                Item::Mod(module) => (module.name.clone(), module.id),
+                Item::Fn(func) => (func.name.to_owned(), func.id),
+                Item::TypeDef(ty_def) => (ty_def.name.to_owned(), ty_def.id),
+                Item::Mod(module) => (module.name.to_owned(), module.id),
                 Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
             })
         }));
@@ -74,7 +75,7 @@ impl<'ast> Resolver<'ast> {
         let bindings = HashMap::from_iter(
             node.type_defs
                 .iter()
-                .map(|type_def| (type_def.name.clone(), type_def.id)),
+                .map(|type_def| (type_def.name.to_owned(), type_def.id)),
         );
 
         self.with_rib(Rib { bindings }, |this| {
@@ -94,14 +95,14 @@ impl<'ast> Resolver<'ast> {
     fn resolve_fn(&mut self, func: &Fn) {
         self.with_rib(
             Rib {
-                bindings: HashMap::from([(func.name.clone(), func.id)]),
+                bindings: HashMap::from([(func.name.to_owned(), func.id)]),
             },
             |this| this.resolve_expr(func.body),
         );
     }
 
     fn resolve_expr(&mut self, expr: &Expr) {
-        match &expr.kind {
+        match expr.kind {
             ExprKind::Block(stmts) => self.with_rib(
                 Rib {
                     bindings: HashMap::new(),
@@ -129,19 +130,19 @@ impl<'ast> Resolver<'ast> {
                     .insert(name.to_owned(), expr.id);
                 self.resolve_expr(rhs);
             }
-            ExprKind::Path(path) => self.resolve_path(expr.id, path),
+            ExprKind::Path(path) => self.resolve_path(expr.id, &path),
             ExprKind::TypeInit(ty_init) => {
                 let path = ty_init.path;
                 self.resolve_expr(path);
 
-                for field_init in &ty_init.field_inits {
+                for field_init in ty_init.field_inits {
                     self.resolve_expr(field_init.expr);
 
                     if let Some(&res) = self.resolutions.get(&path.id) {
                         match self.nodes.get(res) {
                             Node::Item(Item::VariantDef(variant_def))
                             | &Node::Item(Item::TypeDef(TypeDef {
-                                variants: box [variant_def @ VariantDef { name: None, .. }],
+                                variants: &[variant_def @ VariantDef { name: None, .. }],
                                 ..
                             })) => {
                                 let mut resolved = false;
@@ -154,10 +155,8 @@ impl<'ast> Resolver<'ast> {
                                 }
 
                                 if resolved == false {
-                                    self.errors.push(diag_unresolved(
-                                        &field_init.ident,
-                                        field_init.span.clone(),
-                                    ));
+                                    self.errors
+                                        .push(diag_unresolved(&field_init.ident, field_init.span));
                                 }
                             }
                             res => {
@@ -170,7 +169,7 @@ impl<'ast> Resolver<'ast> {
 
                                 let path =
                                     unwrap_matches!(&path.kind, ExprKind::Path(path) => path);
-                                let path_span = path.segments.last().unwrap().1.clone();
+                                let path_span = path.segments.last().unwrap().1;
                                 self.errors.push(
                                     Diagnostic::error()
                                         .with_message(message)
@@ -184,13 +183,13 @@ impl<'ast> Resolver<'ast> {
             ExprKind::FieldInit(..) => panic!(""),
             ExprKind::FnCall(fn_call) => {
                 self.resolve_expr(fn_call.func);
-                for expr in &fn_call.args {
+                for expr in fn_call.args {
                     self.resolve_expr(expr);
                 }
             }
             ExprKind::MethodCall(method_call) => {
                 self.resolve_expr(method_call.receiver);
-                for expr in &method_call.args {
+                for expr in method_call.args {
                     self.resolve_expr(expr);
                 }
             }
@@ -201,7 +200,7 @@ impl<'ast> Resolver<'ast> {
         let initial = &path.segments[0];
         let mut initial_res = None;
         for rib in self.ribs.iter().rev() {
-            if let Some(&node) = rib.bindings.get(&initial.0) {
+            if let Some(&node) = rib.bindings.get(&initial.0.to_owned()) {
                 initial_res = Some(node);
                 break;
             }
@@ -211,19 +210,19 @@ impl<'ast> Resolver<'ast> {
             self.errors.push(
                 Diagnostic::error()
                     .with_message(format!("unable to resolve `{}`", initial.0))
-                    .with_labels(vec![Label::primary(0, initial.1.clone())]),
+                    .with_labels(vec![Label::primary(0, initial.1)]),
             );
             return;
         }
         let mut final_res = initial_res.unwrap();
 
-        if let [_, rest @ ..] = path.segments.as_slice() {
+        if let [_, rest @ ..] = path.segments {
             let mut current_scope = initial_res.unwrap();
             for (segment, span) in rest {
                 match self.nodes.get(current_scope).unwrap_item() {
                     Item::Mod(module) => {
                         let mut resolved = false;
-                        for item in &module.items {
+                        for item in module.items {
                             let item_name = match item {
                                 Item::Mod(module) => &module.name,
                                 Item::Fn(func) => &func.name,
@@ -243,14 +242,14 @@ impl<'ast> Resolver<'ast> {
                             self.errors.push(
                                 Diagnostic::error()
                                     .with_message(format!("unable to resolve `{}`", segment))
-                                    .with_labels(vec![Label::primary(0, span.clone())]),
+                                    .with_labels(vec![Label::primary(0, *span)]),
                             );
                             return;
                         }
                     }
                     Item::VariantDef(def)
                     | &Item::TypeDef(TypeDef {
-                        variants: box [def @ VariantDef { name: None, .. }],
+                        variants: &[def @ VariantDef { name: None, .. }],
                         ..
                     }) => {
                         let mut resolved = false;
@@ -263,7 +262,7 @@ impl<'ast> Resolver<'ast> {
                         }
 
                         if resolved == false {
-                            self.errors.push(diag_unresolved(segment, span.clone()));
+                            self.errors.push(diag_unresolved(segment, *span));
                             return;
                         }
                     }
@@ -279,7 +278,7 @@ impl<'ast> Resolver<'ast> {
                         }
 
                         if resolved == false {
-                            self.errors.push(diag_unresolved(segment, span.clone()));
+                            self.errors.push(diag_unresolved(segment, *span));
                             return;
                         }
                     }
@@ -294,7 +293,7 @@ impl<'ast> Resolver<'ast> {
     }
 }
 
-fn diag_unresolved(unresolved: &str, span: logos::Span) -> Diagnostic<usize> {
+fn diag_unresolved(unresolved: &str, span: Span) -> Diagnostic<usize> {
     Diagnostic::error()
         .with_message(format!("failed to resolve {}", unresolved))
         .with_labels(vec![Label::primary(0, span)])

@@ -1,9 +1,8 @@
-use std::{cell::RefCell, ops::Range};
+use std::cell::RefCell;
 
-use logos::Span;
 use typed_arena::Arena;
 
-use crate::tokenize::Literal;
+use crate::tokenize::{Literal, Span};
 
 pub struct Nodes<'a>(Arena<Node<'a>>, RefCell<Vec<&'a Node<'a>>>);
 
@@ -16,7 +15,7 @@ impl<'a> Nodes<'a> {
         self.1.borrow()[id.0]
     }
 
-    pub fn push_ty(&'a self, f: impl FnOnce(NodeId) -> Ty) -> &Ty {
+    pub fn push_ty(&'a self, f: impl FnOnce(NodeId) -> Ty<'a>) -> &Ty {
         let id = NodeId(self.0.len());
         let node = &*self.0.alloc(Node::Ty(f(id)));
         self.1.borrow_mut().push(node);
@@ -76,11 +75,11 @@ impl<'a> Nodes<'a> {
 #[derive(Copy, Clone, Hash, PartialEq, Eq, Debug)]
 pub struct NodeId(pub usize);
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum Node<'a> {
     Expr(Expr<'a>),
     Item(Item<'a>),
-    Ty(Ty),
+    Ty(Ty<'a>),
 }
 
 impl<'a> Node<'a> {
@@ -117,6 +116,20 @@ impl<'a> Node<'a> {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum Visibility {
+    Pub,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum Item<'a> {
+    Mod(Module<'a>),
+    VariantDef(VariantDef<'a>),
+    TypeDef(TypeDef<'a>),
+    Fn(Fn<'a>),
+    FieldDef(FieldDef<'a>),
+}
+
 impl<'a> Item<'a> {
     pub fn unwrap_fn(&self) -> &Fn<'a> {
         unwrap_matches!(self, Item::Fn(expr) => expr)
@@ -137,23 +150,7 @@ impl<'a> Item<'a> {
     pub fn unwrap_mod(&self) -> &Module<'a> {
         unwrap_matches!(self, Item::Mod(expr) => expr)
     }
-}
 
-#[derive(Debug, Copy, Clone)]
-pub enum Visibility {
-    Pub,
-}
-
-#[derive(Debug)]
-pub enum Item<'a> {
-    Mod(Module<'a>),
-    VariantDef(VariantDef<'a>),
-    TypeDef(TypeDef<'a>),
-    Fn(Fn<'a>),
-    FieldDef(FieldDef<'a>),
-}
-
-impl<'a> Item<'a> {
     pub fn id(&self) -> NodeId {
         match self {
             Item::Mod(module) => module.id,
@@ -165,106 +162,106 @@ impl<'a> Item<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Ty {
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Ty<'a> {
     pub id: NodeId,
-    pub path: Path,
+    pub path: Path<'a>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Path {
-    pub segments: Vec<(String, Span)>,
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Path<'a> {
+    pub segments: &'a [(&'a str, Span)],
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct Module<'a> {
     pub id: NodeId,
     pub visibility: Option<Visibility>,
-    pub name: String,
-    pub items: Vec<&'a Item<'a>>,
+    pub name: &'a str,
+    pub items: &'a [&'a Item<'a>],
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct TypeDef<'a> {
     pub id: NodeId,
     pub visibility: Option<Visibility>,
-    pub name: String,
-    pub name_span: Range<usize>,
-    pub variants: Box<[&'a VariantDef<'a>]>,
+    pub name: &'a str,
+    pub name_span: Span,
+    pub variants: &'a [&'a VariantDef<'a>],
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct VariantDef<'a> {
     pub id: NodeId,
     pub visibility: Option<Visibility>,
-    pub name: Option<String>,
-    pub field_defs: Box<[&'a FieldDef<'a>]>,
-    pub type_defs: Box<[&'a TypeDef<'a>]>,
+    pub name: Option<&'a str>,
+    pub field_defs: &'a [&'a FieldDef<'a>],
+    pub type_defs: &'a [&'a TypeDef<'a>],
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct FieldDef<'a> {
     pub id: NodeId,
     pub visibility: Option<Visibility>,
-    pub name: String,
-    pub ty: &'a Ty,
+    pub name: &'a str,
+    pub ty: &'a Ty<'a>,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct Fn<'a> {
     pub id: NodeId,
     pub visibility: Option<Visibility>,
-    pub name: String,
-    pub params: Vec<(String, &'a Ty)>,
-    pub ret_ty: Option<String>,
+    pub name: &'a str,
+    pub params: &'a [(&'a str, &'a Ty<'a>)],
+    pub ret_ty: Option<&'a str>,
     pub body: &'a Expr<'a>,
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct Expr<'a> {
     pub id: NodeId,
     pub kind: ExprKind<'a>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum ExprKind<'a> {
-    Let(String, &'a Expr<'a>),
-    Block(Vec<(&'a Expr<'a>, bool)>),
+    Let(&'a str, &'a Expr<'a>),
+    Block(&'a [(&'a Expr<'a>, bool)]),
     BinOp(BinOp, &'a Expr<'a>, &'a Expr<'a>),
     UnOp(UnOp, &'a Expr<'a>),
     Lit(Literal),
-    Path(Path),
+    Path(Path<'a>),
     FnCall(FnCall<'a>),
     MethodCall(MethodCall<'a>),
     TypeInit(TypeInit<'a>),
     FieldInit(FieldInit<'a>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct FnCall<'a> {
     pub func: &'a Expr<'a>,
-    pub args: Vec<&'a Expr<'a>>,
+    pub args: &'a [&'a Expr<'a>],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct MethodCall<'a> {
     pub receiver: &'a Expr<'a>,
     pub func: &'a Expr<'a>,
-    pub args: Vec<&'a Expr<'a>>,
+    pub args: &'a [&'a Expr<'a>],
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct FieldInit<'a> {
     pub id: NodeId,
-    pub ident: String,
+    pub ident: &'a str,
     pub span: Span,
     pub expr: &'a Expr<'a>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct TypeInit<'a> {
     pub path: &'a Expr<'a>,
-    pub field_inits: Vec<&'a FieldInit<'a>>,
+    pub field_inits: &'a [&'a FieldInit<'a>],
 }
 
 impl<'a> ExprKind<'a> {

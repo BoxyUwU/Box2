@@ -1,11 +1,6 @@
-use std::ops::Range;
-
-use codespan_reporting::diagnostic::{Diagnostic, Label};
-use logos::Span;
-
-use crate::tokenize::{Kw, Token, Tokenizer};
-
 use crate::ast::*;
+use crate::tokenize::{Kw, Span, Token, Tokenizer};
+use codespan_reporting::diagnostic::{Diagnostic, Label};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Operator {
@@ -193,8 +188,8 @@ fn parse_expr<'a>(
                     let field = nodes.push_expr_with(|id| {
                         ExprKind::FieldInit(FieldInit {
                             id,
-                            ident: ident.to_owned(),
-                            span: span.clone(),
+                            ident,
+                            span,
                             expr: rhs,
                         })
                     });
@@ -211,7 +206,7 @@ fn parse_expr<'a>(
 
                 nodes.push_expr(ExprKind::TypeInit(TypeInit {
                     path,
-                    field_inits: fields,
+                    field_inits: Box::leak(fields.into_boxed_slice()),
                 }))
             }
         }
@@ -250,9 +245,7 @@ fn parse_expr<'a>(
                     Ok(_) => continue,
                     Err(_) => match tok.next_if(Token::RParen) {
                         Ok(_) => break,
-                        Err((found, span)) => {
-                            return Err(diag_expected_bound(")", found, span.clone()))
-                        }
+                        Err((found, span)) => return Err(diag_expected_bound(")", found, span)),
                     },
                 }
             }
@@ -262,13 +255,13 @@ fn parse_expr<'a>(
                     lhs = nodes.push_expr(ExprKind::MethodCall(MethodCall {
                         receiver,
                         func,
-                        args: elements,
+                        args: Box::leak(elements.into_boxed_slice()),
                     }))
                 }
                 _ => {
                     lhs = nodes.push_expr(ExprKind::FnCall(FnCall {
                         func: lhs,
-                        args: elements,
+                        args: Box::leak(elements.into_boxed_slice()),
                     }))
                 }
             }
@@ -280,10 +273,9 @@ fn parse_expr<'a>(
     }
 }
 
-fn parse_path<'a>(tok: &mut Tokenizer<'a>) -> Result<Path, Diagnostic<usize>> {
-    let ident = |tok: &mut Tokenizer<'_>| {
+fn parse_path<'a>(tok: &mut Tokenizer<'a>) -> Result<Path<'a>, Diagnostic<usize>> {
+    let ident = |tok: &mut Tokenizer<'a>| {
         tok.next_if_ident()
-            .map(|(tok, sp)| (tok.to_owned(), sp))
             .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))
     };
 
@@ -293,7 +285,9 @@ fn parse_path<'a>(tok: &mut Tokenizer<'a>) -> Result<Path, Diagnostic<usize>> {
         segments.push(segment);
     }
 
-    Ok(Path { segments })
+    Ok(Path {
+        segments: Box::leak(segments.into_boxed_slice()),
+    })
 }
 
 fn parse_let_expr<'a>(
@@ -308,7 +302,7 @@ fn parse_let_expr<'a>(
     tok.next_if(Token::Eq)
         .map_err(|(found, span)| diag_expected_bound("=", found, span))?;
     let expr = parse_expr(tok, nodes, 0)?;
-    Ok(nodes.push_expr(ExprKind::Let(name.to_owned(), expr)))
+    Ok(nodes.push_expr(ExprKind::Let(name, expr)))
 }
 
 pub fn parse_block_expr<'a>(
@@ -323,7 +317,7 @@ pub fn parse_block_expr<'a>(
         let terminator = tok.next_if(Token::SemiColon).is_ok();
         stmts.push((expr, terminator));
     }
-    Ok(nodes.push_expr(ExprKind::Block(stmts)))
+    Ok(nodes.push_expr(ExprKind::Block(Box::leak(stmts.into_boxed_slice()))))
 }
 
 pub fn parse_fn<'a>(
@@ -341,8 +335,7 @@ pub fn parse_fn<'a>(
     let name = tok
         .next_if_ident()
         .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))?
-        .0
-        .to_owned();
+        .0;
 
     tok.next_if(Token::LParen)
         .map_err(|(found, span)| diag_expected_bound("(", found, span))?;
@@ -350,7 +343,7 @@ pub fn parse_fn<'a>(
     while let Ok((ident, _)) = tok.next_if_ident() {
         tok.next_if(Token::Colon)
             .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
-        params.push((ident.to_owned(), parse_ty(tok, nodes)?));
+        params.push((ident, parse_ty(tok, nodes)?));
 
         match tok.next_if(Token::Comma) {
             Ok(_) => continue,
@@ -365,8 +358,7 @@ pub fn parse_fn<'a>(
         ret_ty = Some(
             tok.next_if_ident()
                 .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))?
-                .0
-                .to_owned(),
+                .0,
         );
     }
 
@@ -375,7 +367,7 @@ pub fn parse_fn<'a>(
         id,
         visibility,
         name,
-        params,
+        params: Box::leak(params.into_boxed_slice()),
         ret_ty,
         body,
     }))
@@ -384,7 +376,7 @@ pub fn parse_fn<'a>(
 pub fn parse_type_def<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
-    parent_field: Option<(String, Range<usize>)>,
+    parent_field: Option<(&str, Span)>,
 ) -> Result<&'a Item<'a>, Diagnostic<usize>> {
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
@@ -394,10 +386,7 @@ pub fn parse_type_def<'a>(
         .next_if(Token::Kw(Kw::Type))
         .map_err(|(found, span)| diag_expected_bound("type", found, span))?;
 
-    let mut name = tok
-        .next_if_ident()
-        .ok()
-        .map(|(name, span)| (name.to_string(), span));
+    let mut name = tok.next_if_ident().ok();
     // type def is only permitted to not have a name if it is
     // the rhs of a field i.e. `field: type { ... }`
     if let None = name {
@@ -413,6 +402,7 @@ pub fn parse_type_def<'a>(
         .to_string();
         let ty_name = heck::CamelCase::to_camel_case(&field_name[..]);
         prefix.push_str(&ty_name);
+        let prefix = Box::leak(prefix.into_boxed_str());
         name = Some((prefix, field_name_span));
     }
 
@@ -432,8 +422,7 @@ pub fn parse_type_def<'a>(
             let name = tok
                 .next_if_ident()
                 .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))?
-                .0
-                .to_owned();
+                .0;
             tok.next_if(Token::LBrace)
                 .map_err(|(found, span)| diag_expected_bound("{", found, span))?;
             let Fields {
@@ -447,8 +436,8 @@ pub fn parse_type_def<'a>(
                 id,
                 visibility,
                 name: Some(name),
-                type_defs: type_defs.into_boxed_slice(),
-                field_defs: field_defs.into_boxed_slice(),
+                type_defs: Box::leak(type_defs.into_boxed_slice()),
+                field_defs: Box::leak(field_defs.into_boxed_slice()),
             });
             variants.push(variant);
 
@@ -467,8 +456,8 @@ pub fn parse_type_def<'a>(
             id,
             visibility,
             name: None,
-            type_defs: type_defs.into_boxed_slice(),
-            field_defs: field_defs.into_boxed_slice(),
+            type_defs: Box::leak(type_defs.into_boxed_slice()),
+            field_defs: Box::leak(field_defs.into_boxed_slice()),
         });
         variants.push(variant);
     }
@@ -482,7 +471,7 @@ pub fn parse_type_def<'a>(
         visibility,
         name,
         name_span,
-        variants: variants.into_boxed_slice(),
+        variants: Box::leak(variants.into_boxed_slice()),
     });
     Ok(item)
 }
@@ -506,21 +495,21 @@ fn parse_fields<'a>(
             .map(|_| Visibility::Pub);
         let (name, name_span) = tok
             .next_if_ident()
-            .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))
-            .map(|(name, span)| (name.to_string(), span))?;
+            .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))?;
         tok.next_if(Token::Colon)
             .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
 
         let ty = match tok.peek() {
             Some((Token::Kw(Kw::Type | Kw::Pub), _)) => {
-                let ty_def = parse_type_def(tok, nodes, Some((name.clone(), name_span.clone())))?
-                    .unwrap_type_def();
+                let ty_def = parse_type_def(tok, nodes, Some((name, name_span)))?.unwrap_type_def();
                 type_defs.push(ty_def);
 
                 nodes.push_ty(|id| Ty {
                     id,
                     path: Path {
-                        segments: vec![(ty_def.name.clone(), ty_def.name_span.clone())],
+                        segments: Box::leak(
+                            vec![(ty_def.name, ty_def.name_span)].into_boxed_slice(),
+                        ),
                     },
                 })
             }
@@ -579,7 +568,7 @@ pub fn parse_mod<'a>(
             _ => {
                 return Err(Diagnostic::error()
                     .with_message("non-item in module")
-                    .with_labels(vec![Label::primary(0, peeked.1.clone())]))
+                    .with_labels(vec![Label::primary(0, peeked.1)]))
             }
         };
         items.push(item_node);
@@ -589,7 +578,7 @@ pub fn parse_mod<'a>(
         id,
         visibility,
         name: name.0.into(),
-        items,
+        items: Box::leak(items.into_boxed_slice()),
     }))
 }
 
@@ -612,7 +601,7 @@ pub fn parse_crate<'a>(
             _ => {
                 return Err(Diagnostic::error()
                     .with_message("non-item in module")
-                    .with_labels(vec![Label::primary(0, peeked.1.clone())]))
+                    .with_labels(vec![Label::primary(0, peeked.1)]))
             }
         };
         items.push(item_node);
@@ -623,7 +612,7 @@ pub fn parse_crate<'a>(
             id,
             visibility: Some(Visibility::Pub),
             name: "".into(),
-            items,
+            items: Box::leak(items.into_boxed_slice()),
         })
         .unwrap_mod())
 }
@@ -631,7 +620,7 @@ pub fn parse_crate<'a>(
 pub fn parse_ty<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
-) -> Result<&'a Ty, Diagnostic<usize>> {
+) -> Result<&'a Ty<'a>, Diagnostic<usize>> {
     tok.peek_if_ident()
         .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))?;
     if let Some((Token::PathSep, _)) = tok.peek_second() {
@@ -642,7 +631,7 @@ pub fn parse_ty<'a>(
         Ok(nodes.push_ty(|id| Ty {
             id,
             path: Path {
-                segments: vec![(ident.to_string(), span)],
+                segments: Box::leak(vec![(ident, span)].into_boxed_slice()),
             },
         }))
     }
