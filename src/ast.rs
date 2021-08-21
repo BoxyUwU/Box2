@@ -118,16 +118,27 @@ impl<'a> Node<'a> {
 
 #[derive(Debug, Copy, Clone)]
 pub enum Visibility {
+    Priv,
     Pub,
+}
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Ty<'a> {
+    pub id: NodeId,
+    pub path: Path<'a>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Path<'a> {
+    pub segments: &'a [(&'a str, Span)],
 }
 
 #[derive(Copy, Clone, Debug)]
 pub enum Item<'a> {
     Mod(Module<'a>),
-    VariantDef(VariantDef<'a>),
     TypeDef(TypeDef<'a>),
-    Fn(Fn<'a>),
+    VariantDef(VariantDef<'a>),
     FieldDef(FieldDef<'a>),
+    Fn(Fn<'a>),
 }
 
 impl<'a> Item<'a> {
@@ -162,21 +173,10 @@ impl<'a> Item<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub struct Ty<'a> {
-    pub id: NodeId,
-    pub path: Path<'a>,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub struct Path<'a> {
-    pub segments: &'a [(&'a str, Span)],
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct Module<'a> {
     pub id: NodeId,
-    pub visibility: Option<Visibility>,
+    pub visibility: Visibility,
     pub name: &'a str,
     pub items: &'a [&'a Item<'a>],
 }
@@ -184,7 +184,7 @@ pub struct Module<'a> {
 #[derive(Copy, Clone, Debug)]
 pub struct TypeDef<'a> {
     pub id: NodeId,
-    pub visibility: Option<Visibility>,
+    pub visibility: Visibility,
     pub name: &'a str,
     pub name_span: Span,
     pub variants: &'a [&'a VariantDef<'a>],
@@ -193,7 +193,7 @@ pub struct TypeDef<'a> {
 #[derive(Copy, Clone, Debug)]
 pub struct VariantDef<'a> {
     pub id: NodeId,
-    pub visibility: Option<Visibility>,
+    pub visibility: Visibility,
     pub name: Option<&'a str>,
     pub field_defs: &'a [&'a FieldDef<'a>],
     pub type_defs: &'a [&'a TypeDef<'a>],
@@ -202,7 +202,7 @@ pub struct VariantDef<'a> {
 #[derive(Copy, Clone, Debug)]
 pub struct FieldDef<'a> {
     pub id: NodeId,
-    pub visibility: Option<Visibility>,
+    pub visibility: Visibility,
     pub name: &'a str,
     pub ty: &'a Ty<'a>,
 }
@@ -210,10 +210,10 @@ pub struct FieldDef<'a> {
 #[derive(Copy, Clone, Debug)]
 pub struct Fn<'a> {
     pub id: NodeId,
-    pub visibility: Option<Visibility>,
+    pub visibility: Visibility,
     pub name: &'a str,
     pub params: &'a [(&'a str, &'a Ty<'a>)],
-    pub ret_ty: Option<&'a str>,
+    pub ret_ty: Option<&'a Ty<'a>>,
     pub body: &'a Expr<'a>,
 }
 

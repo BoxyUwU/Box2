@@ -329,7 +329,8 @@ pub fn parse_fn<'a>(
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
         .ok()
-        .map(|_| Visibility::Pub);
+        .map(|_| Visibility::Pub)
+        .unwrap_or(Visibility::Priv);
     tok.next_if(Token::Kw(Kw::Fn))
         .map_err(|(found, span)| diag_expected_bound("fn", found, span))?;
     let name = tok
@@ -355,11 +356,7 @@ pub fn parse_fn<'a>(
 
     let mut ret_ty = None;
     if let Ok(_) = tok.next_if(Token::Arrow) {
-        ret_ty = Some(
-            tok.next_if_ident()
-                .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))?
-                .0,
-        );
+        ret_ty = Some(parse_ty(tok, nodes)?);
     }
 
     let body = parse_block_expr(tok, nodes)?;
@@ -381,7 +378,8 @@ pub fn parse_type_def<'a>(
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
         .ok()
-        .map(|_| Visibility::Pub);
+        .map(|_| Visibility::Pub)
+        .unwrap_or(Visibility::Priv);
     let (_, type_span) = tok
         .next_if(Token::Kw(Kw::Type))
         .map_err(|(found, span)| diag_expected_bound("type", found, span))?;
@@ -418,7 +416,8 @@ pub fn parse_type_def<'a>(
             let visibility = tok
                 .next_if(Token::Kw(Kw::Pub))
                 .ok()
-                .map(|_| Visibility::Pub);
+                .map(|_| Visibility::Pub)
+                .unwrap_or(Visibility::Priv);
             let name = tok
                 .next_if_ident()
                 .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))?
@@ -492,7 +491,8 @@ fn parse_fields<'a>(
         let visibility = tok
             .next_if(Token::Kw(Kw::Pub))
             .ok()
-            .map(|_| Visibility::Pub);
+            .map(|_| Visibility::Pub)
+            .unwrap_or(Visibility::Priv);
         let (name, name_span) = tok
             .next_if_ident()
             .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))?;
@@ -543,7 +543,8 @@ pub fn parse_mod<'a>(
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
         .ok()
-        .map(|_| Visibility::Pub);
+        .map(|_| Visibility::Pub)
+        .unwrap_or(Visibility::Priv);
     tok.next_if(Token::Kw(Kw::Mod))
         .map_err(|(tok, sp)| diag_expected_bound("mod", tok, sp))?;
     let name = tok
@@ -610,7 +611,7 @@ pub fn parse_crate<'a>(
     Ok(nodes
         .push_mod_def(|id| Module {
             id,
-            visibility: Some(Visibility::Pub),
+            visibility: Visibility::Pub,
             name: "".into(),
             items: Box::leak(items.into_boxed_slice()),
         })
