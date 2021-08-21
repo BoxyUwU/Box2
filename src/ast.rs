@@ -4,70 +4,85 @@ use typed_arena::Arena;
 
 use crate::tokenize::{Literal, Span};
 
-pub struct Nodes<'a>(Arena<Node<'a>>, RefCell<Vec<&'a Node<'a>>>);
+#[derive(Default)]
+pub struct Nodes<'a> {
+    arena: Arena<Node<'a>>,
+    ids: RefCell<Vec<&'a Node<'a>>>,
+
+    pub string_arena: Arena<String>,
+    pub item_def_slices: Arena<Vec<&'a Item<'a>>>,
+    pub type_def_slices: Arena<Vec<&'a TypeDef<'a>>>,
+    pub variant_def_slices: Arena<Vec<&'a VariantDef<'a>>>,
+    pub field_def_slices: Arena<Vec<&'a FieldDef<'a>>>,
+    pub expr_slices: Arena<Vec<&'a Expr<'a>>>,
+    pub expr_bool_slices: Arena<Vec<(&'a Expr<'a>, bool)>>,
+    pub field_init_slices: Arena<Vec<&'a FieldInit<'a>>>,
+    pub str_span_slices: Arena<Vec<(&'a str, Span)>>,
+    pub str_ty_slices: Arena<Vec<(&'a str, &'a Ty<'a>)>>,
+}
 
 impl<'a> Nodes<'a> {
     pub fn new() -> Self {
-        Self(Arena::new(), RefCell::default())
+        Default::default()
     }
 
-    pub fn get(&'a self, id: NodeId) -> &Node {
-        self.1.borrow()[id.0]
+    pub fn get(&'a self, id: NodeId) -> &'a Node {
+        self.ids.borrow()[id.0]
     }
 
     pub fn push_ty(&'a self, f: impl FnOnce(NodeId) -> Ty<'a>) -> &Ty {
-        let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node::Ty(f(id)));
-        self.1.borrow_mut().push(node);
+        let id = NodeId(self.arena.len());
+        let node = &*self.arena.alloc(Node::Ty(f(id)));
+        self.ids.borrow_mut().push(node);
         node.unwrap_ty()
     }
 
     pub fn push_expr_with(&'a self, f: impl FnOnce(NodeId) -> ExprKind<'a>) -> &Expr {
-        let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node::Expr(Expr { id, kind: f(id) }));
-        self.1.borrow_mut().push(node);
+        let id = NodeId(self.arena.len());
+        let node = &*self.arena.alloc(Node::Expr(Expr { id, kind: f(id) }));
+        self.ids.borrow_mut().push(node);
         node.unwrap_expr()
     }
 
     pub fn push_expr(&'a self, kind: ExprKind<'a>) -> &Expr {
-        let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node::Expr(Expr { id, kind }));
-        self.1.borrow_mut().push(node);
+        let id = NodeId(self.arena.len());
+        let node = &*self.arena.alloc(Node::Expr(Expr { id, kind }));
+        self.ids.borrow_mut().push(node);
         node.unwrap_expr()
     }
 
     pub fn push_fn(&'a self, f: impl FnOnce(NodeId) -> Fn<'a>) -> &Item {
-        let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node::Item(Item::Fn(f(id))));
-        self.1.borrow_mut().push(node);
+        let id = NodeId(self.arena.len());
+        let node = &*self.arena.alloc(Node::Item(Item::Fn(f(id))));
+        self.ids.borrow_mut().push(node);
         node.unwrap_item()
     }
 
     pub fn push_variant_def(&'a self, f: impl FnOnce(NodeId) -> VariantDef<'a>) -> &VariantDef {
-        let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node::Item(Item::VariantDef(f(id))));
-        self.1.borrow_mut().push(node);
+        let id = NodeId(self.arena.len());
+        let node = &*self.arena.alloc(Node::Item(Item::VariantDef(f(id))));
+        self.ids.borrow_mut().push(node);
         node.unwrap_variant_def()
     }
 
     pub fn push_field_def(&'a self, f: impl FnOnce(NodeId) -> FieldDef<'a>) -> &FieldDef {
-        let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node::Item(Item::FieldDef(f(id))));
-        self.1.borrow_mut().push(node);
+        let id = NodeId(self.arena.len());
+        let node = &*self.arena.alloc(Node::Item(Item::FieldDef(f(id))));
+        self.ids.borrow_mut().push(node);
         node.unwrap_field_def()
     }
 
     pub fn push_type_def(&'a self, f: impl FnOnce(NodeId) -> TypeDef<'a>) -> &Item {
-        let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node::Item(Item::TypeDef(f(id))));
-        self.1.borrow_mut().push(node);
+        let id = NodeId(self.arena.len());
+        let node = &*self.arena.alloc(Node::Item(Item::TypeDef(f(id))));
+        self.ids.borrow_mut().push(node);
         node.unwrap_item()
     }
 
     pub fn push_mod_def(&'a self, f: impl FnOnce(NodeId) -> Module<'a>) -> &Item {
-        let id = NodeId(self.0.len());
-        let node = &*self.0.alloc(Node::Item(Item::Mod(f(id))));
-        self.1.borrow_mut().push(node);
+        let id = NodeId(self.arena.len());
+        let node = &*self.arena.alloc(Node::Item(Item::Mod(f(id))));
+        self.ids.borrow_mut().push(node);
         node.unwrap_item()
     }
 }

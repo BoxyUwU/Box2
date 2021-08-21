@@ -172,7 +172,7 @@ fn parse_expr<'a>(
         let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
         nodes.push_expr(ExprKind::UnOp(unop, rhs))
     } else if let Ok(_) = tok.peek_if_ident() {
-        let path = nodes.push_expr(ExprKind::Path(parse_path(tok)?));
+        let path = nodes.push_expr(ExprKind::Path(parse_path(tok, nodes)?));
 
         // handle type construction i.e.
         // `Foo { field: 10 + 1 }`
@@ -206,7 +206,7 @@ fn parse_expr<'a>(
 
                 nodes.push_expr(ExprKind::TypeInit(TypeInit {
                     path,
-                    field_inits: Box::leak(fields.into_boxed_slice()),
+                    field_inits: &**nodes.field_init_slices.alloc(fields),
                 }))
             }
         }
@@ -255,13 +255,13 @@ fn parse_expr<'a>(
                     lhs = nodes.push_expr(ExprKind::MethodCall(MethodCall {
                         receiver,
                         func,
-                        args: Box::leak(elements.into_boxed_slice()),
+                        args: &**nodes.expr_slices.alloc(elements),
                     }))
                 }
                 _ => {
                     lhs = nodes.push_expr(ExprKind::FnCall(FnCall {
                         func: lhs,
-                        args: Box::leak(elements.into_boxed_slice()),
+                        args: &**nodes.expr_slices.alloc(elements),
                     }))
                 }
             }
@@ -273,7 +273,10 @@ fn parse_expr<'a>(
     }
 }
 
-fn parse_path<'a>(tok: &mut Tokenizer<'a>) -> Result<Path<'a>, Diagnostic<usize>> {
+fn parse_path<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &'a Nodes<'a>,
+) -> Result<Path<'a>, Diagnostic<usize>> {
     let ident = |tok: &mut Tokenizer<'a>| {
         tok.next_if_ident()
             .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))
@@ -286,7 +289,7 @@ fn parse_path<'a>(tok: &mut Tokenizer<'a>) -> Result<Path<'a>, Diagnostic<usize>
     }
 
     Ok(Path {
-        segments: Box::leak(segments.into_boxed_slice()),
+        segments: &**nodes.str_span_slices.alloc(segments),
     })
 }
 
@@ -317,7 +320,7 @@ pub fn parse_block_expr<'a>(
         let terminator = tok.next_if(Token::SemiColon).is_ok();
         stmts.push((expr, terminator));
     }
-    Ok(nodes.push_expr(ExprKind::Block(Box::leak(stmts.into_boxed_slice()))))
+    Ok(nodes.push_expr(ExprKind::Block(nodes.expr_bool_slices.alloc(stmts))))
 }
 
 pub fn parse_fn<'a>(
@@ -364,7 +367,7 @@ pub fn parse_fn<'a>(
         id,
         visibility,
         name,
-        params: Box::leak(params.into_boxed_slice()),
+        params: &**nodes.str_ty_slices.alloc(params),
         ret_ty,
         body,
     }))
@@ -400,7 +403,7 @@ pub fn parse_type_def<'a>(
         .to_string();
         let ty_name = heck::CamelCase::to_camel_case(&field_name[..]);
         prefix.push_str(&ty_name);
-        let prefix = Box::leak(prefix.into_boxed_str());
+        let prefix = &**nodes.string_arena.alloc(prefix);
         name = Some((prefix, field_name_span));
     }
 
@@ -435,8 +438,8 @@ pub fn parse_type_def<'a>(
                 id,
                 visibility,
                 name: Some(name),
-                type_defs: Box::leak(type_defs.into_boxed_slice()),
-                field_defs: Box::leak(field_defs.into_boxed_slice()),
+                type_defs: &**nodes.type_def_slices.alloc(type_defs),
+                field_defs: &**nodes.field_def_slices.alloc(field_defs),
             });
             variants.push(variant);
 
@@ -455,8 +458,8 @@ pub fn parse_type_def<'a>(
             id,
             visibility,
             name: None,
-            type_defs: Box::leak(type_defs.into_boxed_slice()),
-            field_defs: Box::leak(field_defs.into_boxed_slice()),
+            type_defs: &**nodes.type_def_slices.alloc(type_defs),
+            field_defs: &**nodes.field_def_slices.alloc(field_defs),
         });
         variants.push(variant);
     }
@@ -470,7 +473,7 @@ pub fn parse_type_def<'a>(
         visibility,
         name,
         name_span,
-        variants: Box::leak(variants.into_boxed_slice()),
+        variants: &**nodes.variant_def_slices.alloc(variants),
     });
     Ok(item)
 }
@@ -507,9 +510,9 @@ fn parse_fields<'a>(
                 nodes.push_ty(|id| Ty {
                     id,
                     path: Path {
-                        segments: Box::leak(
-                            vec![(ty_def.name, ty_def.name_span)].into_boxed_slice(),
-                        ),
+                        segments: &**nodes
+                            .str_span_slices
+                            .alloc(vec![(ty_def.name, ty_def.name_span)]),
                     },
                 })
             }
@@ -579,7 +582,7 @@ pub fn parse_mod<'a>(
         id,
         visibility,
         name: name.0.into(),
-        items: Box::leak(items.into_boxed_slice()),
+        items: &**nodes.item_def_slices.alloc(items),
     }))
 }
 
@@ -613,7 +616,7 @@ pub fn parse_crate<'a>(
             id,
             visibility: Visibility::Pub,
             name: "".into(),
-            items: Box::leak(items.into_boxed_slice()),
+            items: &**nodes.item_def_slices.alloc(items),
         })
         .unwrap_mod())
 }
@@ -625,14 +628,14 @@ pub fn parse_ty<'a>(
     tok.peek_if_ident()
         .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))?;
     if let Some((Token::PathSep, _)) = tok.peek_second() {
-        let path = parse_path(tok)?;
+        let path = parse_path(tok, nodes)?;
         Ok(nodes.push_ty(|id| Ty { id, path }))
     } else {
         let (ident, span) = tok.next_if_ident().unwrap();
         Ok(nodes.push_ty(|id| Ty {
             id,
             path: Path {
-                segments: Box::leak(vec![(ident, span)].into_boxed_slice()),
+                segments: nodes.str_span_slices.alloc(vec![(ident, span)]),
             },
         }))
     }
@@ -645,10 +648,10 @@ mod test {
     #[test]
     fn paths() {
         let nodes = Nodes::new();
-        parse_path(&mut Tokenizer::new("Foo::Bar::Variant::Idk")).unwrap();
-        parse_path(&mut Tokenizer::new("Foo::Bar")).unwrap();
-        parse_path(&mut Tokenizer::new("Foo::Bar::")).unwrap_err();
-        parse_path(&mut Tokenizer::new("Foo::")).unwrap_err();
+        parse_path(&mut Tokenizer::new("Foo::Bar::Variant::Idk"), &nodes).unwrap();
+        parse_path(&mut Tokenizer::new("Foo::Bar"), &nodes).unwrap();
+        parse_path(&mut Tokenizer::new("Foo::Bar::"), &nodes).unwrap_err();
+        parse_path(&mut Tokenizer::new("Foo::"), &nodes).unwrap_err();
         parse_expr(&mut Tokenizer::new("Foo::Bar + 10"), &nodes, 0).unwrap();
     }
 
