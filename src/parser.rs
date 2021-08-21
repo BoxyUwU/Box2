@@ -106,6 +106,7 @@ impl<'a> Tokenizer<'a> {
 impl Kw {
     fn format_found(&self) -> String {
         match self {
+            Kw::Use => "use".into(),
             Kw::Mod => "mod".into(),
             Kw::Let => "let".into(),
             Kw::Fn => "fn".into(),
@@ -149,7 +150,7 @@ impl<'a> Token<'a> {
     }
 }
 
-fn diag_expected_bound<'a>(expected: &str, found: Token<'a>, span: Span) -> Diagnostic<usize> {
+fn diag_expected_found<'a>(expected: &str, found: Token<'a>, span: Span) -> Diagnostic<usize> {
     Diagnostic::error()
         .with_message(&format!("expected {}", expected))
         .with_labels(vec![
@@ -165,7 +166,7 @@ fn parse_expr<'a>(
     let mut lhs = if let Ok(_) = tok.next_if(Token::LParen) {
         let inner = parse_expr(tok, nodes, 0)?;
         tok.next_if(Token::RParen)
-            .map_err(|(found, span)| diag_expected_bound(")", found, span))?;
+            .map_err(|(found, span)| diag_expected_found(")", found, span))?;
         inner
     } else if let Some(unop) = tok.next_if_disambig_un_op() {
         let (_, r_bp) = unop.bp();
@@ -182,7 +183,7 @@ fn parse_expr<'a>(
                 let mut fields = Vec::new();
                 while let Ok((ident, span)) = tok.next_if_ident() {
                     tok.next_if(Token::Colon)
-                        .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
+                        .map_err(|(found, span)| diag_expected_found(":", found, span))?;
                     let rhs = parse_expr(tok, nodes, 0)?;
 
                     let field = nodes.push_expr_with(|id| {
@@ -202,7 +203,7 @@ fn parse_expr<'a>(
                 }
 
                 tok.next_if(Token::RBrace)
-                    .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
+                    .map_err(|(found, span)| diag_expected_found("}", found, span))?;
 
                 nodes.push_expr(ExprKind::TypeInit(TypeInit {
                     path,
@@ -219,7 +220,7 @@ fn parse_expr<'a>(
     } else {
         match tok.next() {
             None => return Err(Diagnostic::error().with_message("unexpected end of filed")),
-            Some((found, span)) => return Err(diag_expected_bound("EXPRESSION", found, span)),
+            Some((found, span)) => return Err(diag_expected_found("EXPRESSION", found, span)),
         }
     };
 
@@ -245,7 +246,7 @@ fn parse_expr<'a>(
                     Ok(_) => continue,
                     Err(_) => match tok.next_if(Token::RParen) {
                         Ok(_) => break,
-                        Err((found, span)) => return Err(diag_expected_bound(")", found, span)),
+                        Err((found, span)) => return Err(diag_expected_found(")", found, span)),
                     },
                 }
             }
@@ -279,7 +280,7 @@ fn parse_path<'a>(
 ) -> Result<Path<'a>, Diagnostic<usize>> {
     let ident = |tok: &mut Tokenizer<'a>| {
         tok.next_if_ident()
-            .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))
+            .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))
     };
 
     let mut segments = vec![ident(tok)?];
@@ -298,12 +299,12 @@ fn parse_let_expr<'a>(
     nodes: &'a Nodes<'a>,
 ) -> Result<&'a Expr<'a>, Diagnostic<usize>> {
     tok.next_if(Token::Kw(Kw::Let))
-        .map_err(|(found, span)| diag_expected_bound("let", found, span))?;
+        .map_err(|(found, span)| diag_expected_found("let", found, span))?;
     let (name, _) = tok
         .next_if_ident()
-        .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))?;
+        .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
     tok.next_if(Token::Eq)
-        .map_err(|(found, span)| diag_expected_bound("=", found, span))?;
+        .map_err(|(found, span)| diag_expected_found("=", found, span))?;
     let expr = parse_expr(tok, nodes, 0)?;
     Ok(nodes.push_expr(ExprKind::Let(name, expr)))
 }
@@ -313,7 +314,7 @@ pub fn parse_block_expr<'a>(
     nodes: &'a Nodes<'a>,
 ) -> Result<&'a Expr<'a>, Diagnostic<usize>> {
     tok.next_if(Token::LBrace)
-        .map_err(|(found, span)| diag_expected_bound("{", found, span))?;
+        .map_err(|(found, span)| diag_expected_found("{", found, span))?;
     let mut stmts = vec![];
     while let Err(_) = tok.next_if(Token::RBrace) {
         let expr = parse_expr(tok, nodes, 0)?;
@@ -335,18 +336,18 @@ pub fn parse_fn<'a>(
         .map(|_| Visibility::Pub)
         .unwrap_or(Visibility::Priv);
     tok.next_if(Token::Kw(Kw::Fn))
-        .map_err(|(found, span)| diag_expected_bound("fn", found, span))?;
+        .map_err(|(found, span)| diag_expected_found("fn", found, span))?;
     let name = tok
         .next_if_ident()
-        .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))?
+        .map_err(|(found, span)| diag_expected_found("IDENTIFER", found, span))?
         .0;
 
     tok.next_if(Token::LParen)
-        .map_err(|(found, span)| diag_expected_bound("(", found, span))?;
+        .map_err(|(found, span)| diag_expected_found("(", found, span))?;
     let mut params = Vec::new();
     while let Ok((ident, _)) = tok.next_if_ident() {
         tok.next_if(Token::Colon)
-            .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
+            .map_err(|(found, span)| diag_expected_found(":", found, span))?;
         params.push((ident, parse_ty(tok, nodes)?));
 
         match tok.next_if(Token::Comma) {
@@ -355,7 +356,7 @@ pub fn parse_fn<'a>(
         }
     }
     tok.next_if(Token::RParen)
-        .map_err(|(found, span)| diag_expected_bound(")", found, span))?;
+        .map_err(|(found, span)| diag_expected_found(")", found, span))?;
 
     let mut ret_ty = None;
     if let Ok(_) = tok.next_if(Token::Arrow) {
@@ -385,7 +386,7 @@ pub fn parse_type_def<'a>(
         .unwrap_or(Visibility::Priv);
     let (_, type_span) = tok
         .next_if(Token::Kw(Kw::Type))
-        .map_err(|(found, span)| diag_expected_bound("type", found, span))?;
+        .map_err(|(found, span)| diag_expected_found("type", found, span))?;
 
     let mut name = tok.next_if_ident().ok();
     // type def is only permitted to not have a name if it is
@@ -408,14 +409,14 @@ pub fn parse_type_def<'a>(
     }
 
     tok.next_if(Token::LBrace)
-        .map_err(|(found, span)| diag_expected_bound("{", found, span))?;
+        .map_err(|(found, span)| diag_expected_found("{", found, span))?;
 
     let mut variants = Vec::new();
     if let Ok(_) = tok.peek_if(Token::UpLine) {
         // type { | Foo, | Bar, }
         while let Err(_) = tok.peek_if(Token::RBrace) {
             tok.next_if(Token::UpLine)
-                .map_err(|(found, span)| diag_expected_bound("|", found, span))?;
+                .map_err(|(found, span)| diag_expected_found("|", found, span))?;
             let visibility = tok
                 .next_if(Token::Kw(Kw::Pub))
                 .ok()
@@ -423,16 +424,16 @@ pub fn parse_type_def<'a>(
                 .unwrap_or(Visibility::Priv);
             let name = tok
                 .next_if_ident()
-                .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))?
+                .map_err(|(found, span)| diag_expected_found("IDENTIFER", found, span))?
                 .0;
             tok.next_if(Token::LBrace)
-                .map_err(|(found, span)| diag_expected_bound("{", found, span))?;
+                .map_err(|(found, span)| diag_expected_found("{", found, span))?;
             let Fields {
                 type_defs,
                 field_defs,
             } = parse_fields(tok, nodes)?;
             tok.next_if(Token::RBrace)
-                .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
+                .map_err(|(found, span)| diag_expected_found("}", found, span))?;
 
             let variant = &*nodes.push_variant_def(|id| VariantDef {
                 id,
@@ -465,7 +466,7 @@ pub fn parse_type_def<'a>(
     }
 
     tok.next_if(Token::RBrace)
-        .map_err(|(found, span)| diag_expected_bound("}", found, span))?;
+        .map_err(|(found, span)| diag_expected_found("}", found, span))?;
 
     let (name, name_span) = name.unwrap();
     let item = nodes.push_type_def(|id| TypeDef {
@@ -498,9 +499,9 @@ fn parse_fields<'a>(
             .unwrap_or(Visibility::Priv);
         let (name, name_span) = tok
             .next_if_ident()
-            .map_err(|(found, span)| diag_expected_bound("IDENTIFER", found, span))?;
+            .map_err(|(found, span)| diag_expected_found("IDENTIFER", found, span))?;
         tok.next_if(Token::Colon)
-            .map_err(|(found, span)| diag_expected_bound(":", found, span))?;
+            .map_err(|(found, span)| diag_expected_found(":", found, span))?;
 
         let ty = match tok.peek() {
             Some((Token::Kw(Kw::Type | Kw::Pub), _)) => {
@@ -549,13 +550,13 @@ pub fn parse_mod<'a>(
         .map(|_| Visibility::Pub)
         .unwrap_or(Visibility::Priv);
     tok.next_if(Token::Kw(Kw::Mod))
-        .map_err(|(tok, sp)| diag_expected_bound("mod", tok, sp))?;
+        .map_err(|(tok, sp)| diag_expected_found("mod", tok, sp))?;
     let name = tok
         .next_if_ident()
-        .map_err(|(tok, sp)| diag_expected_bound("IDENTIFER", tok, sp))?;
+        .map_err(|(tok, sp)| diag_expected_found("IDENTIFER", tok, sp))?;
 
     tok.next_if(Token::LBrace)
-        .map_err(|(tok, sp)| diag_expected_bound("{", tok, sp))?;
+        .map_err(|(tok, sp)| diag_expected_found("{", tok, sp))?;
 
     let mut items = Vec::new();
     while let Err(_) = tok.next_if(Token::RBrace) {
@@ -569,6 +570,7 @@ pub fn parse_mod<'a>(
             Token::Kw(Kw::Mod) => parse_mod(tok, nodes)?,
             Token::Kw(Kw::Type) => parse_type_def(tok, nodes, None)?,
             Token::Kw(Kw::Fn) => parse_fn(tok, nodes)?,
+            Token::Kw(Kw::Use) => parse_use(tok, nodes)?,
             _ => {
                 return Err(Diagnostic::error()
                     .with_message("non-item in module")
@@ -583,6 +585,29 @@ pub fn parse_mod<'a>(
         visibility,
         name: name.0.into(),
         items: &**nodes.item_def_slices.alloc(items),
+    }))
+}
+
+pub fn parse_use<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &'a Nodes<'a>,
+) -> Result<&'a Item<'a>, Diagnostic<usize>> {
+    let visibility = tok
+        .next_if(Token::Kw(Kw::Pub))
+        .ok()
+        .map(|_| Visibility::Pub)
+        .unwrap_or(Visibility::Priv);
+    tok.next_if(Token::Kw(Kw::Use))
+        .map_err(|(found, sp)| diag_expected_found("use", found, sp))?;
+
+    let path = parse_path(tok, nodes)?;
+    tok.next_if(Token::SemiColon)
+        .map_err(|(found, sp)| diag_expected_found(";", found, sp))?;
+
+    Ok(nodes.push_use(|id| Use {
+        id,
+        visibility,
+        path,
     }))
 }
 
@@ -626,7 +651,7 @@ pub fn parse_ty<'a>(
     nodes: &'a Nodes<'a>,
 ) -> Result<&'a Ty<'a>, Diagnostic<usize>> {
     tok.peek_if_ident()
-        .map_err(|(found, span)| diag_expected_bound("IDENTIFIER", found, span))?;
+        .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
     if let Some((Token::PathSep, _)) = tok.peek_second() {
         let path = parse_path(tok, nodes)?;
         Ok(nodes.push_ty(|id| Ty { id, path }))

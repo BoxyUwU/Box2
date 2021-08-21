@@ -41,6 +41,7 @@ impl Literal {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Kw {
+    Use,
     Mod,
     Let,
     Fn,
@@ -72,6 +73,7 @@ pub enum Token<'a> {
     #[token("fn", |_| Kw::Fn)]
     #[token("pub", |_| Kw::Pub)]
     #[token("type", |_| Kw::Type)]
+    #[token("use", |_| Kw::Use)]
     Kw(Kw),
 
     #[token("::")]

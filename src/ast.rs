@@ -85,6 +85,13 @@ impl<'a> Nodes<'a> {
         self.ids.borrow_mut().push(node);
         node.unwrap_item()
     }
+
+    pub fn push_use(&'a self, f: impl FnOnce(NodeId) -> Use<'a>) -> &Item {
+        let id = NodeId(self.arena.len());
+        let node = &*self.arena.alloc(Node::Item(Item::Use(f(id))));
+        self.ids.borrow_mut().push(node);
+        node.unwrap_item()
+    }
 }
 
 #[derive(Copy, Clone, Hash, PartialEq, Eq, Debug)]
@@ -154,6 +161,7 @@ pub enum Item<'a> {
     VariantDef(VariantDef<'a>),
     FieldDef(FieldDef<'a>),
     Fn(Fn<'a>),
+    Use(Use<'a>),
 }
 
 impl<'a> Item<'a> {
@@ -177,6 +185,10 @@ impl<'a> Item<'a> {
         unwrap_matches!(self, Item::Mod(expr) => expr)
     }
 
+    pub fn unwrap_use(&self) -> &Use<'a> {
+        unwrap_matches!(self, Item::Use(u) => u)
+    }
+
     pub fn id(&self) -> NodeId {
         match self {
             Item::Mod(module) => module.id,
@@ -184,6 +196,7 @@ impl<'a> Item<'a> {
             Item::TypeDef(def) => def.id,
             Item::Fn(func) => func.id,
             Item::FieldDef(def) => def.id,
+            Item::Use(u) => u.id,
         }
     }
 }
@@ -230,6 +243,13 @@ pub struct Fn<'a> {
     pub params: &'a [(&'a str, &'a Ty<'a>)],
     pub ret_ty: Option<&'a Ty<'a>>,
     pub body: &'a Expr<'a>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Use<'a> {
+    pub id: NodeId,
+    pub visibility: Visibility,
+    pub path: Path<'a>,
 }
 
 #[derive(Copy, Clone, Debug)]

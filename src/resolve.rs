@@ -35,13 +35,12 @@ impl<'ast> Resolver<'ast> {
 
     fn resolve_mod(&mut self, module: &Module) {
         use std::iter::FromIterator;
-        let bindings = HashMap::from_iter(module.items.iter().flat_map(|&item| {
-            Some(match item {
-                Item::Fn(func) => (func.name.to_owned(), func.id),
-                Item::TypeDef(ty_def) => (ty_def.name.to_owned(), ty_def.id),
-                Item::Mod(module) => (module.name.to_owned(), module.id),
-                Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
-            })
+        let bindings = HashMap::from_iter(module.items.iter().map(|&item| match item {
+            Item::Use(..) => todo!(),
+            Item::Fn(func) => (func.name.to_owned(), func.id),
+            Item::TypeDef(ty_def) => (ty_def.name.to_owned(), ty_def.id),
+            Item::Mod(module) => (module.name.to_owned(), module.id),
+            Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
         }));
 
         self.with_rib(Rib { bindings }, |this| {
@@ -50,6 +49,7 @@ impl<'ast> Resolver<'ast> {
                     Item::Fn(func) => this.resolve_fn(func),
                     Item::Mod(module) => this.resolve_mod(module),
                     Item::TypeDef(ty_def) => this.resolve_type_def(ty_def),
+                    Item::Use(..) => todo!(),
                     Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
                 }
             }
@@ -224,6 +224,7 @@ impl<'ast> Resolver<'ast> {
                         let mut resolved = false;
                         for item in module.items {
                             let item_name = match item {
+                                Item::Use(..) => todo!(),
                                 Item::Mod(module) => &module.name,
                                 Item::Fn(func) => &func.name,
                                 Item::TypeDef(ty_def) => &ty_def.name,
@@ -282,6 +283,7 @@ impl<'ast> Resolver<'ast> {
                             return;
                         }
                     }
+                    Item::Use(..) => todo!(),
                     Item::FieldDef(..) | Item::Fn(..) => unreachable!(),
                 }
             }
