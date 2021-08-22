@@ -3,12 +3,15 @@ use codespan_reporting::diagnostic::{Diagnostic, Label};
 use crate::ast::*;
 use crate::tokenize::Span;
 use std::collections::HashMap;
+use std::thread::current;
 
 struct Resolver<'ast> {
     nodes: &'ast Nodes<'ast>,
     resolutions: HashMap<NodeId, NodeId>,
     ribs: Vec<Rib>,
     errors: Vec<Diagnostic<usize>>,
+    // used to prevent cycles when resolving use statements
+    use_item_stack: Vec<NodeId>,
 }
 
 #[derive(Debug)]
@@ -17,13 +20,33 @@ struct Rib {
 }
 
 impl<'ast> Resolver<'ast> {
+    fn debug_out_errors(&mut self, code: &str) {
+        for diag in self.errors.iter() {
+            let mut files = codespan_reporting::files::SimpleFiles::new();
+            files.add("main.box", code);
+            let writer = codespan_reporting::term::termcolor::StandardStream::stderr(
+                codespan_reporting::term::termcolor::ColorChoice::Always,
+            );
+            let config = codespan_reporting::term::Config::default();
+            codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+        }
+    }
+
     fn new(nodes: &'ast Nodes<'ast>) -> Self {
-        Self {
+        let mut this = Self {
             nodes,
             resolutions: HashMap::new(),
             ribs: Vec::new(),
             errors: Vec::new(),
+            use_item_stack: Vec::new(),
+        };
+
+        let num_nodes = this.nodes.arena.len();
+        if num_nodes > 0 {
+            this.early_resolve_mod(this.nodes.get(NodeId(num_nodes - 1)).unwrap_mod());
         }
+
+        this
     }
 
     fn with_rib<T>(&mut self, rib: Rib, f: impl FnOnce(&mut Resolver<'ast>) -> T) -> T {
@@ -36,7 +59,11 @@ impl<'ast> Resolver<'ast> {
     fn resolve_mod(&mut self, module: &Module) {
         use std::iter::FromIterator;
         let bindings = HashMap::from_iter(module.items.iter().map(|&item| match item {
-            Item::Use(..) => todo!(),
+            Item::Use(u) => (
+                // we resolve use stmts before nameres
+                u.path.segments.last().unwrap().0.to_owned(),
+                self.resolutions[&u.id],
+            ),
             Item::Fn(func) => (func.name.to_owned(), func.id),
             Item::TypeDef(ty_def) => (ty_def.name.to_owned(), ty_def.id),
             Item::Mod(module) => (module.name.to_owned(), module.id),
@@ -49,7 +76,7 @@ impl<'ast> Resolver<'ast> {
                     Item::Fn(func) => this.resolve_fn(func),
                     Item::Mod(module) => this.resolve_mod(module),
                     Item::TypeDef(ty_def) => this.resolve_type_def(ty_def),
-                    Item::Use(..) => todo!(),
+                    Item::Use(..) => (), // we resolve use items before nameres
                     Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
                 }
             }
@@ -216,6 +243,10 @@ impl<'ast> Resolver<'ast> {
         }
         let mut final_res = initial_res.unwrap();
 
+        if let Node::Item(Item::Use(u)) = self.nodes.get(final_res) {
+            final_res = self.resolutions[&u.id];
+        }
+
         if let [_, rest @ ..] = path.segments {
             let mut current_scope = initial_res.unwrap();
             for (segment, span) in rest {
@@ -224,7 +255,15 @@ impl<'ast> Resolver<'ast> {
                         let mut resolved = false;
                         for item in module.items {
                             let item_name = match item {
-                                Item::Use(..) => todo!(),
+                                Item::Use(u) => {
+                                    let use_as = &u.path.segments.last().unwrap().0;
+                                    if segment == use_as {
+                                        // we resolve use stmts before nameres
+                                        current_scope = self.resolutions[&u.id];
+                                        resolved = true;
+                                    }
+                                    break;
+                                }
                                 Item::Mod(module) => &module.name,
                                 Item::Fn(func) => &func.name,
                                 Item::TypeDef(ty_def) => &ty_def.name,
@@ -283,7 +322,9 @@ impl<'ast> Resolver<'ast> {
                             return;
                         }
                     }
-                    Item::Use(..) => todo!(),
+                    // we replace ids of use stmts with the ids of what they point to
+                    // before entering this body, and when we resolve idents of mod children
+                    Item::Use(..) => unreachable!(),
                     Item::FieldDef(..) | Item::Fn(..) => unreachable!(),
                 }
             }
@@ -292,6 +333,82 @@ impl<'ast> Resolver<'ast> {
         }
 
         self.resolutions.insert(id, final_res);
+    }
+}
+
+impl<'a> Resolver<'a> {
+    fn early_resolve_mod(&mut self, module: &Module) {
+        for item in module.items {
+            match item {
+                Item::Use(u) => drop(self.early_resolve_use(module, u)),
+                Item::Mod(module) => self.early_resolve_mod(module),
+                _ => (),
+            }
+        }
+    }
+
+    fn early_resolve_use(&mut self, module: &Module, u: &Use) -> Result<NodeId, ()> {
+        if let Some(n) = self.use_item_stack.iter().position(|&id| id == u.id) {
+            let start = self.nodes.get(self.use_item_stack[0]).unwrap_use();
+            let &(start, span) = start.path.segments.last().unwrap();
+            let cycle_diagnostic = Diagnostic::error()
+                .with_message(format!("cyclic use item found: {}", start))
+                .with_labels(
+                    IntoIterator::into_iter([
+                        Label::primary(0, span).with_message("cyclic use item")
+                    ])
+                    .chain(self.use_item_stack[0..n].iter().map(|node| {
+                        let node = self.nodes.get(*node).unwrap_use();
+                        let &(_, span) = node.path.segments.last().unwrap();
+                        Label::primary(0, span).with_message("requires resolving this use item")
+                    }))
+                    .chain([Label::primary(0, span).with_message("cycle completed here")])
+                    .collect::<Vec<_>>(),
+                );
+            self.errors.push(cycle_diagnostic);
+            return Err(());
+        }
+        self.use_item_stack.push(u.id);
+
+        let mut prev_seg = module.id;
+        for seg in u.path.segments {
+            let (_, resolved_to) = match self.nodes.get(prev_seg).unwrap_item() {
+                Item::VariantDef(def)
+                | Item::TypeDef(TypeDef {
+                    variants: &[def @ VariantDef { name: None, .. }],
+                    ..
+                }) => def
+                    .type_defs
+                    .iter()
+                    .map(|ty_def| (ty_def.name, ty_def.id))
+                    .find(|&(name, _)| name == seg.0),
+                Item::TypeDef(def) => def
+                    .variants
+                    .iter()
+                    .map(|var_def| (var_def.name.unwrap(), var_def.id))
+                    .find(|&(name, _)| name == seg.0),
+                Item::Mod(module) => module
+                    .items
+                    .iter()
+                    .map(|item| (item.name().unwrap(), item.id()))
+                    .find(|&(name, _)| name == seg.0),
+                Item::Fn(..) => None,
+                Item::FieldDef(..) | Item::Use(..) => unreachable!(),
+            }
+            .ok_or_else(|| self.errors.push(diag_unresolved(seg.0, seg.1)))?;
+
+            match self.nodes.get(resolved_to).unwrap_item() {
+                Item::Use(u) => {
+                    let module = self.nodes.get(prev_seg).unwrap_mod();
+                    prev_seg = self.early_resolve_use(module, u)?;
+                }
+                _ => prev_seg = resolved_to,
+            }
+        }
+
+        self.use_item_stack.pop();
+        self.resolutions.insert(u.id, prev_seg);
+        Ok(prev_seg)
     }
 }
 
@@ -304,6 +421,93 @@ fn diag_unresolved(unresolved: &str, span: Span) -> Diagnostic<usize> {
 #[cfg(test)]
 mod test {
     use crate::{ast::*, resolve::Resolver, tokenize::Tokenizer};
+
+    #[test]
+    fn resolve_use_items() {
+        let code = "
+            mod foo {
+                type Foo {}
+            }
+            use foo::Foo;
+            fn bar(arg: Foo) {}
+        ";
+
+        let nodes = Nodes::new();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
+
+        let mut resolver = Resolver::new(&nodes);
+        resolver.debug_out_errors(code);
+        assert_eq!(resolver.errors.len(), 0);
+        resolver.resolve_mod(root);
+        resolver.debug_out_errors(code);
+        assert_eq!(resolver.errors.len(), 0);
+    }
+
+    #[test]
+    fn resolve_use_items_2() {
+        let code = "
+            mod foo_one {
+                mod foo_two {
+                    type Other {}
+                }
+                use foo_two::Other;
+            }
+            use foo_one::Other;
+            fn uses_other(arg: Other) {}
+        ";
+
+        let nodes = Nodes::new();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
+
+        let mut resolver = Resolver::new(&nodes);
+        resolver.debug_out_errors(code);
+        assert_eq!(resolver.errors.len(), 0);
+        resolver.resolve_mod(root);
+        resolver.debug_out_errors(code);
+        assert_eq!(resolver.errors.len(), 0);
+    }
+
+    #[test]
+    fn resolve_use_items_cycles() {
+        let code = "
+            use Foo;
+            use Foo;
+        ";
+
+        let nodes = Nodes::new();
+        crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
+
+        let resolver = Resolver::new(&nodes);
+        assert_eq!(resolver.errors.len(), 2);
+    }
+
+    #[test]
+    fn resolve_use_items_3() {
+        let code = "
+            type Foo {
+                field: Bar,
+                other_field: type {},
+            }
+
+            type WithVariant {
+                | Blah { field: type Bar {} },
+                | Idk { field: OtherField },
+            }
+
+            use Foo::OtherField;
+            use WithVariant::Blah::Bar;
+        ";
+
+        let nodes = Nodes::new();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
+
+        let mut resolver = Resolver::new(&nodes);
+        resolver.debug_out_errors(code);
+        assert_eq!(resolver.errors.len(), 0);
+        resolver.resolve_mod(root);
+        resolver.debug_out_errors(code);
+        assert_eq!(resolver.errors.len(), 0);
+    }
 
     #[test]
     fn resolve_method_call() {
@@ -569,45 +773,26 @@ mod test {
     #[test]
     fn let_stmt() {
         let nodes = Nodes::new();
-        let root = crate::parser::parse_block_expr(
-            &mut Tokenizer::new("{ let foo = 10; foo + 1; }"),
+        let root = crate::parser::parse_crate(
+            &mut Tokenizer::new("fn foo() { let bar = 10; bar + 1; }"),
             &nodes,
         )
         .unwrap();
-        let stmts = unwrap_matches!(&root.kind, ExprKind::Block(stmts) => stmts);
-
-        let let_id = stmts[0].0.id;
-        let foo_ident = unwrap_matches!(
-            &stmts[1].0.kind,
-            ExprKind::BinOp(_, lhs, _) => lhs.id
-        );
-
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_expr(root);
-
-        assert_eq!(resolver.resolutions[&foo_ident], let_id);
+        resolver.resolve_mod(root);
         assert_eq!(resolver.errors.len(), 0);
     }
 
     #[test]
     fn nested_block() {
         let nodes = Nodes::new();
-        let root = crate::parser::parse_block_expr(
-            &mut Tokenizer::new("{ { let foo = 1; } foo + 1; }"),
+        let root = crate::parser::parse_crate(
+            &mut Tokenizer::new("fn foo() { { let bar = 1; } bar + 1; }"),
             &nodes,
         )
         .unwrap();
-        let stmts = unwrap_matches!(&root.kind, ExprKind::Block(stmts) => stmts);
-
-        let foo_ident = unwrap_matches!(
-            &stmts[1].0.kind,
-            ExprKind::BinOp(_, lhs, _) => lhs.id
-        );
-
         let mut resolver = Resolver::new(&nodes);
-        resolver.resolve_expr(root);
-
-        assert!(resolver.resolutions.get(&foo_ident).is_none());
+        resolver.resolve_mod(root);
         assert_eq!(resolver.errors.len(), 1);
     }
 }

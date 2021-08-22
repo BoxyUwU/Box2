@@ -627,6 +627,7 @@ pub fn parse_crate<'a>(
             Token::Kw(Kw::Mod) => parse_mod(tok, nodes)?,
             Token::Kw(Kw::Type) => parse_type_def(tok, nodes, None)?,
             Token::Kw(Kw::Fn) => parse_fn(tok, nodes)?,
+            Token::Kw(Kw::Use) => parse_use(tok, nodes)?,
             _ => {
                 return Err(Diagnostic::error()
                     .with_message("non-item in module")

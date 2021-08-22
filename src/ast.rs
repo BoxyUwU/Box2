@@ -6,8 +6,8 @@ use crate::tokenize::{Literal, Span};
 
 #[derive(Default)]
 pub struct Nodes<'a> {
-    arena: Arena<Node<'a>>,
-    ids: RefCell<Vec<&'a Node<'a>>>,
+    pub arena: Arena<Node<'a>>,
+    pub ids: RefCell<Vec<&'a Node<'a>>>,
 
     pub string_arena: Arena<String>,
     pub item_def_slices: Arena<Vec<&'a Item<'a>>>,
@@ -136,6 +136,10 @@ impl<'a> Node<'a> {
     pub fn unwrap_ty(&self) -> &Ty {
         unwrap_matches!(self, Node::Ty(expr) => expr)
     }
+
+    pub fn unwrap_use(&self) -> &Use {
+        unwrap_matches!(self, Node::Item(Item::Use(u)) => u)
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -198,6 +202,17 @@ impl<'a> Item<'a> {
             Item::FieldDef(def) => def.id,
             Item::Use(u) => u.id,
         }
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        Some(match self {
+            Item::Mod(m) => m.name,
+            Item::TypeDef(def) => def.name,
+            Item::VariantDef(def) => return def.name,
+            Item::FieldDef(def) => def.name,
+            Item::Fn(f) => f.name,
+            Item::Use(u) => u.path.segments.last().unwrap().0,
+        })
     }
 }
 
