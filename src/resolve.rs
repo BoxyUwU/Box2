@@ -223,116 +223,57 @@ impl<'ast> Resolver<'ast> {
         }
     }
 
-    fn resolve_path(&mut self, id: NodeId, path: &Path) {
-        let initial = &path.segments[0];
-        let mut initial_res = None;
-        for rib in self.ribs.iter().rev() {
-            if let Some(&node) = rib.bindings.get(&initial.0.to_owned()) {
-                initial_res = Some(node);
-                break;
-            }
-        }
+    fn resolve_path(&mut self, path_id: NodeId, path: &Path) {
+        let first_seg = &path.segments[0];
+        let first_seg = match self
+            .ribs
+            .iter()
+            .rev()
+            .find_map(|rib| rib.bindings.get(first_seg.0).copied())
+        {
+            Some(id) => id,
+            None => return self.errors.push(diag_unresolved(first_seg.0, first_seg.1)),
+        };
 
-        if let None = initial_res {
-            self.errors.push(
-                Diagnostic::error()
-                    .with_message(format!("unable to resolve `{}`", initial.0))
-                    .with_labels(vec![Label::primary(0, initial.1)]),
-            );
-            return;
-        }
-        let mut final_res = initial_res.unwrap();
-
-        if let Node::Item(Item::Use(u)) = self.nodes.get(final_res) {
-            final_res = self.resolutions[&u.id];
-        }
-
-        if let [_, rest @ ..] = path.segments {
-            let mut current_scope = initial_res.unwrap();
-            for (segment, span) in rest {
-                match self.nodes.get(current_scope).unwrap_item() {
-                    Item::Mod(module) => {
-                        let mut resolved = false;
-                        for item in module.items {
-                            let item_name = match item {
-                                Item::Use(u) => {
-                                    let use_as = &u.path.segments.last().unwrap().0;
-                                    if segment == use_as {
-                                        // we resolve use stmts before nameres
-                                        current_scope = self.resolutions[&u.id];
-                                        resolved = true;
-                                    }
-                                    break;
-                                }
-                                Item::Mod(module) => &module.name,
-                                Item::Fn(func) => &func.name,
-                                Item::TypeDef(ty_def) => &ty_def.name,
-                                Item::VariantDef(variant_def) => variant_def.name.as_ref().unwrap(),
-                                Item::FieldDef(..) => unreachable!(),
-                            };
-
-                            if segment == item_name {
-                                current_scope = item.id();
-                                resolved = true;
-                                break;
-                            }
-                        }
-
-                        if resolved == false {
-                            self.errors.push(
-                                Diagnostic::error()
-                                    .with_message(format!("unable to resolve `{}`", segment))
-                                    .with_labels(vec![Label::primary(0, *span)]),
-                            );
-                            return;
-                        }
+        let res =
+            path.segments
+                .iter()
+                .skip(1)
+                .try_fold(first_seg, |prev_segment, (segment, span)| {
+                    match self.nodes.get(prev_segment).unwrap_item() {
+                        Item::Mod(module) => module
+                            .items
+                            .iter()
+                            .map(|item| (item.name().unwrap(), item.id()))
+                            .find(|(name, _)| segment == name),
+                        Item::VariantDef(def)
+                        | &Item::TypeDef(TypeDef {
+                            variants: &[def @ VariantDef { name: None, .. }],
+                            ..
+                        }) => def
+                            .type_defs
+                            .iter()
+                            .map(|ty_def| (ty_def.name, ty_def.id))
+                            .find(|(name, _)| segment == name),
+                        Item::TypeDef(ty_def) => ty_def
+                            .variants
+                            .iter()
+                            .map(|variant| (variant.name.unwrap(), variant.id))
+                            .find(|(name, _)| name == segment),
+                        Item::Fn(..) => None,
+                        // we replace ids of use stmts with the ids of what they resolve to
+                        // before entering this body, and when we resolve idents of mod children
+                        //
+                        // we cannot resolve to field defs
+                        Item::Use(..) | Item::FieldDef(..) => unreachable!(),
                     }
-                    Item::VariantDef(def)
-                    | &Item::TypeDef(TypeDef {
-                        variants: &[def @ VariantDef { name: None, .. }],
-                        ..
-                    }) => {
-                        let mut resolved = false;
-                        for ty_def in def.type_defs.iter() {
-                            if segment == &ty_def.name {
-                                current_scope = ty_def.id;
-                                resolved = true;
-                                break;
-                            }
-                        }
+                    .map(|(_, id)| id)
+                    .ok_or_else(|| self.errors.push(diag_unresolved(segment, *span)))
+                });
 
-                        if resolved == false {
-                            self.errors.push(diag_unresolved(segment, *span));
-                            return;
-                        }
-                    }
-                    Item::TypeDef(ty_def) => {
-                        // variants
-                        let mut resolved = false;
-                        for variant in ty_def.variants.iter() {
-                            if segment == variant.name.as_ref().unwrap() {
-                                current_scope = variant.id;
-                                resolved = true;
-                                break;
-                            }
-                        }
-
-                        if resolved == false {
-                            self.errors.push(diag_unresolved(segment, *span));
-                            return;
-                        }
-                    }
-                    // we replace ids of use stmts with the ids of what they point to
-                    // before entering this body, and when we resolve idents of mod children
-                    Item::Use(..) => unreachable!(),
-                    Item::FieldDef(..) | Item::Fn(..) => unreachable!(),
-                }
-            }
-
-            final_res = current_scope;
+        if let Ok(res) = res {
+            self.resolutions.insert(path_id, res);
         }
-
-        self.resolutions.insert(id, final_res);
     }
 }
 
