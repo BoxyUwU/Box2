@@ -3,7 +3,6 @@ use codespan_reporting::diagnostic::{Diagnostic, Label};
 use crate::ast::*;
 use crate::tokenize::Span;
 use std::collections::HashMap;
-use std::thread::current;
 
 struct Resolver<'ast> {
     nodes: &'ast Nodes<'ast>,
@@ -33,20 +32,13 @@ impl<'ast> Resolver<'ast> {
     }
 
     fn new(nodes: &'ast Nodes<'ast>) -> Self {
-        let mut this = Self {
+        Self {
             nodes,
             resolutions: HashMap::new(),
             ribs: Vec::new(),
             errors: Vec::new(),
             use_item_stack: Vec::new(),
-        };
-
-        let num_nodes = this.nodes.arena.len();
-        if num_nodes > 0 {
-            this.early_resolve_mod(this.nodes.get(NodeId(num_nodes - 1)).unwrap_mod());
         }
-
-        this
     }
 
     fn with_rib<T>(&mut self, rib: Rib, f: impl FnOnce(&mut Resolver<'ast>) -> T) -> T {
@@ -58,16 +50,21 @@ impl<'ast> Resolver<'ast> {
 
     fn resolve_mod(&mut self, module: &Module) {
         use std::iter::FromIterator;
-        let bindings = HashMap::from_iter(module.items.iter().map(|&item| match item {
-            Item::Use(u) => (
-                // we resolve use stmts before nameres
-                u.path.segments.last().unwrap().0.to_owned(),
-                self.resolutions[&u.id],
-            ),
-            Item::Fn(func) => (func.name.to_owned(), func.id),
-            Item::TypeDef(ty_def) => (ty_def.name.to_owned(), ty_def.id),
-            Item::Mod(module) => (module.name.to_owned(), module.id),
-            Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
+        let bindings = HashMap::from_iter(module.items.iter().flat_map(|&item| {
+            Some(match item {
+                Item::Use(u) => {
+                    // FIXME
+                    // remove the flat_map and allow to resolve to an error or something idfk
+                    return self
+                        .resolve_path(Some(module.id), u.id, &u.path)
+                        .ok()
+                        .map(|id| (u.path.segments.last().unwrap().0.to_owned(), id));
+                }
+                Item::Fn(func) => (func.name.to_owned(), func.id),
+                Item::TypeDef(ty_def) => (ty_def.name.to_owned(), ty_def.id),
+                Item::Mod(module) => (module.name.to_owned(), module.id),
+                Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
+            })
         }));
 
         self.with_rib(Rib { bindings }, |this| {
@@ -76,7 +73,7 @@ impl<'ast> Resolver<'ast> {
                     Item::Fn(func) => this.resolve_fn(func),
                     Item::Mod(module) => this.resolve_mod(module),
                     Item::TypeDef(ty_def) => this.resolve_type_def(ty_def),
-                    Item::Use(..) => (), // we resolve use items before nameres
+                    Item::Use(..) => (), // handled above when building bindings
                     Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
                 }
             }
@@ -116,7 +113,7 @@ impl<'ast> Resolver<'ast> {
     }
 
     fn resolve_ty(&mut self, ty: &Ty) {
-        self.resolve_path(ty.id, &ty.path);
+        let _ = self.resolve_path(None, ty.id, &ty.path);
     }
 
     fn resolve_fn(&mut self, func: &Fn) {
@@ -157,7 +154,7 @@ impl<'ast> Resolver<'ast> {
                     .insert(name.to_owned(), expr.id);
                 self.resolve_expr(rhs);
             }
-            ExprKind::Path(path) => self.resolve_path(expr.id, &path),
+            ExprKind::Path(path) => drop(self.resolve_path(None, expr.id, &path)),
             ExprKind::TypeInit(ty_init) => {
                 let path = ty_init.path;
                 self.resolve_expr(path);
@@ -223,73 +220,15 @@ impl<'ast> Resolver<'ast> {
         }
     }
 
-    fn resolve_path(&mut self, path_id: NodeId, path: &Path) {
-        let first_seg = &path.segments[0];
-        let first_seg = match self
-            .ribs
-            .iter()
-            .rev()
-            .find_map(|rib| rib.bindings.get(first_seg.0).copied())
-        {
-            Some(id) => id,
-            None => return self.errors.push(diag_unresolved(first_seg.0, first_seg.1)),
-        };
-
-        let res =
-            path.segments
-                .iter()
-                .skip(1)
-                .try_fold(first_seg, |prev_segment, (segment, span)| {
-                    match self.nodes.get(prev_segment).unwrap_item() {
-                        Item::Mod(module) => module
-                            .items
-                            .iter()
-                            .map(|item| (item.name().unwrap(), item.id()))
-                            .find(|(name, _)| segment == name),
-                        Item::VariantDef(def)
-                        | &Item::TypeDef(TypeDef {
-                            variants: &[def @ VariantDef { name: None, .. }],
-                            ..
-                        }) => def
-                            .type_defs
-                            .iter()
-                            .map(|ty_def| (ty_def.name, ty_def.id))
-                            .find(|(name, _)| segment == name),
-                        Item::TypeDef(ty_def) => ty_def
-                            .variants
-                            .iter()
-                            .map(|variant| (variant.name.unwrap(), variant.id))
-                            .find(|(name, _)| name == segment),
-                        Item::Fn(..) => None,
-                        // we replace ids of use stmts with the ids of what they resolve to
-                        // before entering this body, and when we resolve idents of mod children
-                        //
-                        // we cannot resolve to field defs
-                        Item::Use(..) | Item::FieldDef(..) => unreachable!(),
-                    }
-                    .map(|(_, id)| id)
-                    .ok_or_else(|| self.errors.push(diag_unresolved(segment, *span)))
-                });
-
-        if let Ok(res) = res {
-            self.resolutions.insert(path_id, res);
-        }
-    }
-}
-
-impl<'a> Resolver<'a> {
-    fn early_resolve_mod(&mut self, module: &Module) {
-        for item in module.items {
-            match item {
-                Item::Use(u) => drop(self.early_resolve_use(module, u)),
-                Item::Mod(module) => self.early_resolve_mod(module),
-                _ => (),
-            }
-        }
-    }
-
-    fn early_resolve_use(&mut self, module: &Module, u: &Use) -> Result<NodeId, ()> {
-        if let Some(n) = self.use_item_stack.iter().position(|&id| id == u.id) {
+    fn resolve_path(
+        &mut self,
+        resolve_in_scope_of: Option<NodeId>,
+        path_id: NodeId,
+        path: &Path,
+    ) -> Result<NodeId, ()> {
+        // error when attempting to resolve a path that we are already in the process
+        // of trying to resolve
+        if let Some(n) = self.use_item_stack.iter().position(|&id| id == path_id) {
             let start = self.nodes.get(self.use_item_stack[0]).unwrap_use();
             let &(start, span) = start.path.segments.last().unwrap();
             let cycle_diagnostic = Diagnostic::error()
@@ -309,47 +248,83 @@ impl<'a> Resolver<'a> {
             self.errors.push(cycle_diagnostic);
             return Err(());
         }
-        self.use_item_stack.push(u.id);
 
-        let mut prev_seg = module.id;
-        for seg in u.path.segments {
-            let (_, resolved_to) = match self.nodes.get(prev_seg).unwrap_item() {
-                Item::VariantDef(def)
-                | Item::TypeDef(TypeDef {
-                    variants: &[def @ VariantDef { name: None, .. }],
-                    ..
-                }) => def
-                    .type_defs
+        let first_seg = &path.segments[0];
+        let first_seg = match resolve_in_scope_of {
+            Some(id) => id,
+            None => {
+                let mut first_seg = match self
+                    .ribs
                     .iter()
-                    .map(|ty_def| (ty_def.name, ty_def.id))
-                    .find(|&(name, _)| name == seg.0),
-                Item::TypeDef(def) => def
-                    .variants
-                    .iter()
-                    .map(|var_def| (var_def.name.unwrap(), var_def.id))
-                    .find(|&(name, _)| name == seg.0),
-                Item::Mod(module) => module
-                    .items
-                    .iter()
-                    .map(|item| (item.name().unwrap(), item.id()))
-                    .find(|&(name, _)| name == seg.0),
-                Item::Fn(..) => None,
-                Item::FieldDef(..) | Item::Use(..) => unreachable!(),
-            }
-            .ok_or_else(|| self.errors.push(diag_unresolved(seg.0, seg.1)))?;
+                    .rev()
+                    .find_map(|rib| rib.bindings.get(first_seg.0).copied())
+                {
+                    Some(id) => id,
+                    None => {
+                        return Err(self.errors.push(diag_unresolved(first_seg.0, first_seg.1)))
+                    }
+                };
 
-            match self.nodes.get(resolved_to).unwrap_item() {
-                Item::Use(u) => {
-                    let module = self.nodes.get(prev_seg).unwrap_mod();
-                    prev_seg = self.early_resolve_use(module, u)?;
+                if let Node::Item(Item::Use(u)) = self.nodes.get(first_seg) {
+                    self.use_item_stack.push(path_id);
+                    let resolved = self.resolve_path(None, u.id, &u.path);
+                    assert_eq!(self.use_item_stack.pop().unwrap(), path_id);
+                    first_seg = resolved?;
                 }
-                _ => prev_seg = resolved_to,
-            }
-        }
 
-        self.use_item_stack.pop();
-        self.resolutions.insert(u.id, prev_seg);
-        Ok(prev_seg)
+                first_seg
+            }
+        };
+
+        let res = path
+            .segments
+            .iter()
+            .skip(resolve_in_scope_of.is_none() as usize)
+            .try_fold(first_seg, |prev_segment, (segment, span)| {
+                match self.nodes.get(prev_segment).unwrap_item() {
+                    Item::Mod(module) => module
+                        .items
+                        .iter()
+                        .map(|item| (item.name().unwrap(), item.id()))
+                        .find(|(name, _)| segment == name),
+                    Item::VariantDef(def)
+                    | &Item::TypeDef(TypeDef {
+                        variants: &[def @ VariantDef { name: None, .. }],
+                        ..
+                    }) => def
+                        .type_defs
+                        .iter()
+                        .map(|ty_def| (ty_def.name, ty_def.id))
+                        .find(|(name, _)| segment == name),
+                    Item::TypeDef(ty_def) => ty_def
+                        .variants
+                        .iter()
+                        .map(|variant| (variant.name.unwrap(), variant.id))
+                        .find(|(name, _)| name == segment),
+                    Item::Fn(..) => None,
+                    // we replace prev_segment == Item::Use before entering this loop
+                    // and before continueing to next iterations
+                    //
+                    // we cannot resolve to field defs
+                    Item::Use(..) | Item::FieldDef(..) => unreachable!(),
+                }
+                .map(|(_, id)| id)
+                .ok_or_else(|| self.errors.push(diag_unresolved(segment, *span)))
+                .and_then(|id| match self.nodes.get(id) {
+                    Node::Item(Item::Use(u)) => {
+                        self.use_item_stack.push(path_id);
+                        let resolved = self.resolve_path(Some(prev_segment), u.id, &u.path);
+                        assert_eq!(self.use_item_stack.pop().unwrap(), path_id);
+                        resolved
+                    }
+                    _ => Ok(id),
+                })
+            });
+
+        if let Ok(res) = res {
+            self.resolutions.insert(path_id, res);
+        }
+        res
     }
 }
 
@@ -377,10 +352,8 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.debug_out_errors(code);
-        assert_eq!(resolver.errors.len(), 0);
         resolver.resolve_mod(root);
-        resolver.debug_out_errors(code);
+        //resolver.debug_out_errors(code);
         assert_eq!(resolver.errors.len(), 0);
     }
 
@@ -401,10 +374,8 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.debug_out_errors(code);
-        assert_eq!(resolver.errors.len(), 0);
         resolver.resolve_mod(root);
-        resolver.debug_out_errors(code);
+        //resolver.debug_out_errors(code);
         assert_eq!(resolver.errors.len(), 0);
     }
 
@@ -416,9 +387,11 @@ mod test {
         ";
 
         let nodes = Nodes::new();
-        crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
-        let resolver = Resolver::new(&nodes);
+        let mut resolver = Resolver::new(&nodes);
+        resolver.resolve_mod(root);
+        //resolver.debug_out_errors(code);
         assert_eq!(resolver.errors.len(), 2);
     }
 
@@ -443,10 +416,8 @@ mod test {
         let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
 
         let mut resolver = Resolver::new(&nodes);
-        resolver.debug_out_errors(code);
-        assert_eq!(resolver.errors.len(), 0);
         resolver.resolve_mod(root);
-        resolver.debug_out_errors(code);
+        //resolver.debug_out_errors(code);
         assert_eq!(resolver.errors.len(), 0);
     }
 
