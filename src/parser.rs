@@ -601,6 +601,16 @@ pub fn parse_use<'a>(
         .map_err(|(found, sp)| diag_expected_found("use", found, sp))?;
 
     let path = parse_path(tok, nodes)?;
+
+    let name = match tok.next_if(Token::Eq) {
+        Ok(_) => {
+            tok.next_if_ident()
+                .map_err(|(found, span)| diag_expected_found("IDENTIFER", found, span))?
+                .0
+        }
+        Err(_) => path.segments.last().unwrap().0,
+    };
+
     tok.next_if(Token::SemiColon)
         .map_err(|(found, sp)| diag_expected_found(";", found, sp))?;
 
@@ -608,6 +618,7 @@ pub fn parse_use<'a>(
         id,
         visibility,
         path,
+        name,
     }))
 }
 

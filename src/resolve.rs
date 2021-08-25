@@ -58,7 +58,7 @@ impl<'ast> Resolver<'ast> {
                     return self
                         .resolve_path(Some(module.id), u.id, &u.path)
                         .ok()
-                        .map(|id| (u.path.segments.last().unwrap().0.to_owned(), id));
+                        .map(|id| (u.name.to_owned(), id));
                 }
                 Item::Fn(func) => (func.name.to_owned(), func.id),
                 Item::TypeDef(ty_def) => (ty_def.name.to_owned(), ty_def.id),
@@ -228,23 +228,20 @@ impl<'ast> Resolver<'ast> {
     ) -> Result<NodeId, ()> {
         // error when attempting to resolve a path that we are already in the process
         // of trying to resolve
-        if let Some(n) = self.use_item_stack.iter().position(|&id| id == path_id) {
-            let start = self.nodes.get(self.use_item_stack[0]).unwrap_use();
-            let &(start, span) = start.path.segments.last().unwrap();
+        if let Some(n_id) = self.use_item_stack.iter().find(|&&id| id == path_id) {
+            let start_use_item = self.nodes.get(self.use_item_stack[0]).unwrap_use();
+            let cyclic_use_item = self.nodes.get(*n_id).unwrap_use();
             let cycle_diagnostic = Diagnostic::error()
-                .with_message(format!("cyclic use item found: {}", start))
-                .with_labels(
-                    IntoIterator::into_iter([
-                        Label::primary(0, span).with_message("cyclic use item")
-                    ])
-                    .chain(self.use_item_stack[0..n].iter().map(|node| {
-                        let node = self.nodes.get(*node).unwrap_use();
-                        let &(_, span) = node.path.segments.last().unwrap();
-                        Label::primary(0, span).with_message("requires resolving this use item")
-                    }))
-                    .chain([Label::primary(0, span).with_message("cycle completed here")])
-                    .collect::<Vec<_>>(),
-                );
+                .with_message(format!(
+                    "Cycle when resolving use item {}",
+                    start_use_item.name
+                ))
+                .with_labels(vec![
+                    Label::primary(0, start_use_item.path.segments.last().unwrap().1)
+                        .with_message("use item"),
+                    Label::secondary(0, cyclic_use_item.path.segments.last().unwrap().1)
+                        .with_message("which requires resolving this cyclic use item"),
+                ]);
             self.errors.push(cycle_diagnostic);
             return Err(());
         }
@@ -337,6 +334,43 @@ fn diag_unresolved(unresolved: &str, span: Span) -> Diagnostic<usize> {
 #[cfg(test)]
 mod test {
     use crate::{ast::*, resolve::Resolver, tokenize::Tokenizer};
+
+    #[test]
+    fn resolve_use_eq_items() {
+        let code = "
+            mod foo {
+                type Foo {}
+            }
+            use foo::Foo = Bar;
+            fn bar(arg: Bar) {}
+        ";
+
+        let nodes = Nodes::new();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
+
+        let mut resolver = Resolver::new(&nodes);
+        resolver.resolve_mod(root);
+        //resolver.debug_out_errors(code);
+        assert_eq!(resolver.errors.len(), 0);
+    }
+
+    #[test]
+    fn advanced_use_cycle() {
+        let code = "
+            use Foo = Bar;
+            use Bar = Baz;
+            use Baz = Blah;
+            use Blah = Foo;
+        ";
+
+        let nodes = Nodes::new();
+        let root = crate::parser::parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
+
+        let mut resolver = Resolver::new(&nodes);
+        resolver.resolve_mod(root);
+        //resolver.debug_out_errors(code);
+        assert_eq!(resolver.errors.len(), 4);
+    }
 
     #[test]
     fn resolve_use_items() {

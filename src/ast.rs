@@ -211,7 +211,7 @@ impl<'a> Item<'a> {
             Item::VariantDef(def) => return def.name,
             Item::FieldDef(def) => def.name,
             Item::Fn(f) => f.name,
-            Item::Use(u) => u.path.segments.last().unwrap().0,
+            Item::Use(u) => u.name,
         })
     }
 }
@@ -265,6 +265,7 @@ pub struct Use<'a> {
     pub id: NodeId,
     pub visibility: Visibility,
     pub path: Path<'a>,
+    pub name: &'a str,
 }
 
 #[derive(Copy, Clone, Debug)]
