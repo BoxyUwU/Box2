@@ -222,7 +222,7 @@ impl<'ast> Resolver<'ast> {
 
     fn resolve_path(
         &mut self,
-        resolve_in_scope_of: Option<NodeId>,
+        resolve_in_item: Option<NodeId>,
         path_id: NodeId,
         path: &Path,
     ) -> Result<NodeId, ()> {
@@ -247,36 +247,23 @@ impl<'ast> Resolver<'ast> {
         }
 
         let first_seg = &path.segments[0];
-        let first_seg = match resolve_in_scope_of {
+        let first_seg = match resolve_in_item {
             Some(id) => id,
-            None => {
-                let mut first_seg = match self
-                    .ribs
-                    .iter()
-                    .rev()
-                    .find_map(|rib| rib.bindings.get(first_seg.0).copied())
-                {
-                    Some(id) => id,
-                    None => {
-                        return Err(self.errors.push(diag_unresolved(first_seg.0, first_seg.1)))
-                    }
-                };
-
-                if let Node::Item(Item::Use(u)) = self.nodes.get(first_seg) {
-                    self.use_item_stack.push(path_id);
-                    let resolved = self.resolve_path(None, u.id, &u.path);
-                    assert_eq!(self.use_item_stack.pop().unwrap(), path_id);
-                    first_seg = resolved?;
-                }
-
-                first_seg
-            }
+            None => match self
+                .ribs
+                .iter()
+                .rev()
+                .find_map(|rib| rib.bindings.get(first_seg.0).copied())
+            {
+                Some(id) => id,
+                None => return Err(self.errors.push(diag_unresolved(first_seg.0, first_seg.1))),
+            },
         };
 
         let res = path
             .segments
             .iter()
-            .skip(resolve_in_scope_of.is_none() as usize)
+            .skip(resolve_in_item.is_none() as usize)
             .try_fold(first_seg, |prev_segment, (segment, span)| {
                 match self.nodes.get(prev_segment).unwrap_item() {
                     Item::Mod(module) => module
@@ -299,9 +286,8 @@ impl<'ast> Resolver<'ast> {
                         .map(|variant| (variant.name.unwrap(), variant.id))
                         .find(|(name, _)| name == segment),
                     Item::Fn(..) => None,
-                    // we replace prev_segment == Item::Use before entering this loop
-                    // and before continueing to next iterations
-                    //
+                    // we replace prev_segment == Item::Use before continueing to next iterations
+                    // and we dont insert resolutions to use items in ribs
                     // we cannot resolve to field defs
                     Item::Use(..) | Item::FieldDef(..) => unreachable!(),
                 }
