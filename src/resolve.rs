@@ -118,6 +118,10 @@ impl<'ast> Resolver<'ast> {
     }
 
     fn resolve_fn(&mut self, func: &Fn) {
+        for param in func.params {
+            self.resolve_ty(param.ty);
+        }
+
         use std::iter::FromIterator;
         self.with_rib(
             Rib {
