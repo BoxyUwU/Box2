@@ -207,7 +207,7 @@ fn parse_expr<'a>(
 
                 nodes.push_expr(ExprKind::TypeInit(TypeInit {
                     path,
-                    field_inits: &**nodes.field_init_slices.alloc(fields),
+                    field_inits: nodes.arena.alloc_slice_fill_iter(fields),
                 }))
             }
         }
@@ -253,7 +253,7 @@ fn parse_expr<'a>(
 
             lhs = nodes.push_expr(ExprKind::FnCall(FnCall {
                 func: lhs,
-                args: &**nodes.expr_slices.alloc(elements),
+                args: nodes.arena.alloc_slice_fill_iter(elements),
             }));
             continue;
         }
@@ -279,7 +279,7 @@ fn parse_path<'a>(
     }
 
     Ok(Path {
-        segments: &**nodes.str_span_slices.alloc(segments),
+        segments: nodes.arena.alloc_slice_fill_iter(segments),
     })
 }
 
@@ -310,7 +310,7 @@ pub fn parse_block_expr<'a>(
         let terminator = tok.next_if(Token::SemiColon).is_ok();
         stmts.push((expr, terminator));
     }
-    Ok(nodes.push_expr(ExprKind::Block(nodes.expr_bool_slices.alloc(stmts))))
+    Ok(nodes.push_expr(ExprKind::Block(nodes.arena.alloc_slice_fill_iter(stmts))))
 }
 
 pub fn parse_fn<'a>(
@@ -358,7 +358,7 @@ pub fn parse_fn<'a>(
         id,
         visibility,
         name,
-        params: &**nodes.param_slices.alloc(params),
+        params: nodes.arena.alloc_slice_fill_iter(params),
         ret_ty,
         body,
     }))
@@ -394,7 +394,7 @@ pub fn parse_type_def<'a>(
         .to_string();
         let ty_name = heck::CamelCase::to_camel_case(&field_name[..]);
         prefix.push_str(&ty_name);
-        let prefix = &**nodes.string_arena.alloc(prefix);
+        let prefix = nodes.arena.alloc_str(&prefix);
         name = Some((prefix, field_name_span));
     }
 
@@ -429,8 +429,8 @@ pub fn parse_type_def<'a>(
                 id,
                 visibility,
                 name: Some(name),
-                type_defs: &**nodes.type_def_slices.alloc(type_defs),
-                field_defs: &**nodes.field_def_slices.alloc(field_defs),
+                type_defs: nodes.arena.alloc_slice_fill_iter(type_defs),
+                field_defs: nodes.arena.alloc_slice_fill_iter(field_defs),
             });
             variants.push(variant);
 
@@ -449,8 +449,8 @@ pub fn parse_type_def<'a>(
             id,
             visibility,
             name: None,
-            type_defs: &**nodes.type_def_slices.alloc(type_defs),
-            field_defs: &**nodes.field_def_slices.alloc(field_defs),
+            type_defs: nodes.arena.alloc_slice_fill_iter(type_defs),
+            field_defs: nodes.arena.alloc_slice_fill_iter(field_defs),
         });
         variants.push(variant);
     }
@@ -464,7 +464,7 @@ pub fn parse_type_def<'a>(
         visibility,
         name,
         name_span,
-        variants: &**nodes.variant_def_slices.alloc(variants),
+        variants: nodes.arena.alloc_slice_fill_iter(variants),
     });
     Ok(item)
 }
@@ -501,9 +501,9 @@ fn parse_fields<'a>(
                 nodes.push_ty(|id| Ty {
                     id,
                     path: Path {
-                        segments: &**nodes
-                            .str_span_slices
-                            .alloc(vec![(ty_def.name, ty_def.name_span)]),
+                        segments: nodes
+                            .arena
+                            .alloc_slice_fill_iter([(ty_def.name, ty_def.name_span)]),
                     },
                 })
             }
@@ -574,7 +574,7 @@ pub fn parse_mod<'a>(
         id,
         visibility,
         name: name.0.into(),
-        items: &**nodes.item_def_slices.alloc(items),
+        items: nodes.arena.alloc_slice_fill_iter(items),
     }))
 }
 
@@ -643,7 +643,7 @@ pub fn parse_crate<'a>(
             id,
             visibility: Visibility::Pub,
             name: "".into(),
-            items: &**nodes.item_def_slices.alloc(items),
+            items: nodes.arena.alloc_slice_fill_iter(items),
         })
         .unwrap_mod())
 }
@@ -662,7 +662,7 @@ pub fn parse_ty<'a>(
         Ok(nodes.push_ty(|id| Ty {
             id,
             path: Path {
-                segments: nodes.str_span_slices.alloc(vec![(ident, span)]),
+                segments: nodes.arena.alloc_slice_fill_iter([(ident, span)]),
             },
         }))
     }
