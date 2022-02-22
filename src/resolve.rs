@@ -118,9 +118,14 @@ impl<'ast> Resolver<'ast> {
     }
 
     fn resolve_fn(&mut self, func: &Fn) {
+        use std::iter::FromIterator;
         self.with_rib(
             Rib {
-                bindings: HashMap::from([(func.name.to_owned(), func.id)]),
+                bindings: HashMap::from_iter(
+                    func.params
+                        .iter()
+                        .map(|param| (param.ident.to_string(), param.id)),
+                ),
             },
             |this| this.resolve_expr(func.body),
         );

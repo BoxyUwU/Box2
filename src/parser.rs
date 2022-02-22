@@ -337,7 +337,8 @@ pub fn parse_fn<'a>(
     while let Ok((ident, _)) = tok.next_if_ident() {
         tok.next_if(Token::Colon)
             .map_err(|(found, span)| diag_expected_found(":", found, span))?;
-        params.push((ident, parse_ty(tok, nodes)?));
+        let ty = parse_ty(tok, nodes)?;
+        params.push(nodes.push_param(|id| Param { id, ident, ty }));
 
         match tok.next_if(Token::Comma) {
             Ok(_) => continue,
@@ -357,7 +358,7 @@ pub fn parse_fn<'a>(
         id,
         visibility,
         name,
-        params: &**nodes.str_ty_slices.alloc(params),
+        params: &**nodes.param_slices.alloc(params),
         ret_ty,
         body,
     }))

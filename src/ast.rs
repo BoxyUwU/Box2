@@ -18,7 +18,7 @@ pub struct Nodes<'a> {
     pub expr_bool_slices: Arena<Vec<(&'a Expr<'a>, bool)>>,
     pub field_init_slices: Arena<Vec<&'a FieldInit<'a>>>,
     pub str_span_slices: Arena<Vec<(&'a str, Span)>>,
-    pub str_ty_slices: Arena<Vec<(&'a str, &'a Ty<'a>)>>,
+    pub param_slices: Arena<Vec<&'a Param<'a>>>,
 }
 
 impl<'a> Nodes<'a> {
@@ -92,6 +92,13 @@ impl<'a> Nodes<'a> {
         self.ids.borrow_mut().push(node);
         node.unwrap_item()
     }
+
+    pub fn push_param(&'a self, f: impl FnOnce(NodeId) -> Param<'a>) -> &Param {
+        let id = NodeId(self.arena.len());
+        let node = &*self.arena.alloc(Node::Param(f(id)));
+        self.ids.borrow_mut().push(node);
+        node.unwrap_param()
+    }
 }
 
 #[derive(Copy, Clone, Hash, PartialEq, Eq, Debug)]
@@ -102,6 +109,7 @@ pub enum Node<'a> {
     Expr(Expr<'a>),
     Item(Item<'a>),
     Ty(Ty<'a>),
+    Param(Param<'a>),
 }
 
 impl<'a> Node<'a> {
@@ -142,6 +150,10 @@ impl<'a> Node<'a> {
 
     pub fn unwrap_use(&self) -> &Use {
         unwrap_matches!(self, Node::Item(Item::Use(u)) => u)
+    }
+
+    pub fn unwrap_param(&self) -> &Param {
+        unwrap_matches!(self, Node::Param(p) => p)
     }
 }
 
@@ -258,11 +270,18 @@ pub struct FieldDef<'a> {
 }
 
 #[derive(Copy, Clone, Debug)]
+pub struct Param<'a> {
+    pub id: NodeId,
+    pub ident: &'a str,
+    pub ty: &'a Ty<'a>,
+}
+
+#[derive(Copy, Clone, Debug)]
 pub struct Fn<'a> {
     pub id: NodeId,
     pub visibility: Visibility,
     pub name: &'a str,
-    pub params: &'a [(&'a str, &'a Ty<'a>)],
+    pub params: &'a [&'a Param<'a>],
     pub ret_ty: Option<&'a Ty<'a>>,
     pub body: &'a Expr<'a>,
 }
