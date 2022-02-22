@@ -121,6 +121,9 @@ impl<'ast> Resolver<'ast> {
         for param in func.params {
             self.resolve_ty(param.ty);
         }
+        if let Some(ret) = func.ret_ty {
+            self.resolve_ty(ret);
+        }
 
         use std::iter::FromIterator;
         self.with_rib(
