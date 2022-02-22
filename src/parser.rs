@@ -251,21 +251,10 @@ fn parse_expr<'a>(
                 }
             }
 
-            match &lhs.kind {
-                &ExprKind::BinOp(BinOp::Dot, receiver, func) => {
-                    lhs = nodes.push_expr(ExprKind::MethodCall(MethodCall {
-                        receiver,
-                        func,
-                        args: &**nodes.expr_slices.alloc(elements),
-                    }))
-                }
-                _ => {
-                    lhs = nodes.push_expr(ExprKind::FnCall(FnCall {
-                        func: lhs,
-                        args: &**nodes.expr_slices.alloc(elements),
-                    }))
-                }
-            }
+            lhs = nodes.push_expr(ExprKind::FnCall(FnCall {
+                func: lhs,
+                args: &**nodes.expr_slices.alloc(elements),
+            }));
             continue;
         }
 

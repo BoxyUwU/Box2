@@ -51,7 +51,7 @@ pub enum Kw {
 
 #[derive(Logos, Copy, Clone, Debug, PartialEq)]
 pub enum Token<'a> {
-    #[regex("[a-zA-Z_-]+", |lex| lex.slice())]
+    #[regex("[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice())]
     Ident(&'a str),
     #[regex("[0-9]+", Literal::int_from_lex)]
     #[regex(r"[0-9]+\.[0-9]+", Literal::float_from_lex)]

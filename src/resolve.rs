@@ -4,11 +4,11 @@ use crate::ast::*;
 use crate::tokenize::Span;
 use std::collections::HashMap;
 
-struct Resolver<'ast> {
+pub struct Resolver<'ast> {
     nodes: &'ast Nodes<'ast>,
     resolutions: HashMap<NodeId, NodeId>,
     ribs: Vec<Rib>,
-    errors: Vec<Diagnostic<usize>>,
+    pub errors: Vec<Diagnostic<usize>>,
     // used to prevent cycles when resolving use statements
     use_item_stack: Vec<NodeId>,
 }
@@ -19,6 +19,7 @@ struct Rib {
 }
 
 impl<'ast> Resolver<'ast> {
+    #[allow(unused)]
     fn debug_out_errors(&mut self, code: &str) {
         for diag in self.errors.iter() {
             let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -31,7 +32,7 @@ impl<'ast> Resolver<'ast> {
         }
     }
 
-    fn new(nodes: &'ast Nodes<'ast>) -> Self {
+    pub fn new(nodes: &'ast Nodes<'ast>) -> Self {
         Self {
             nodes,
             resolutions: HashMap::new(),
@@ -48,7 +49,7 @@ impl<'ast> Resolver<'ast> {
         ret
     }
 
-    fn resolve_mod(&mut self, module: &Module) {
+    pub fn resolve_mod(&mut self, module: &Module) {
         use std::iter::FromIterator;
         let bindings = HashMap::from_iter(module.items.iter().flat_map(|&item| {
             Some(match item {
@@ -208,12 +209,6 @@ impl<'ast> Resolver<'ast> {
             ExprKind::FnCall(fn_call) => {
                 self.resolve_expr(fn_call.func);
                 for expr in fn_call.args {
-                    self.resolve_expr(expr);
-                }
-            }
-            ExprKind::MethodCall(method_call) => {
-                self.resolve_expr(method_call.receiver);
-                for expr in method_call.args {
                     self.resolve_expr(expr);
                 }
             }

@@ -113,10 +113,12 @@ impl<'a> Node<'a> {
         unwrap_matches!(self, Node::Expr(expr) => expr)
     }
 
+    #[allow(unused)]
     pub fn unwrap_fn(&self) -> &Fn<'a> {
         unwrap_matches!(self, Node::Item(Item::Fn(expr)) => expr)
     }
 
+    #[allow(unused)]
     pub fn unwrap_type_def(&self) -> &TypeDef<'a> {
         unwrap_matches!(self, Node::Item(Item::TypeDef(expr)) => expr)
     }
@@ -129,6 +131,7 @@ impl<'a> Node<'a> {
         unwrap_matches!(self, Node::Item(Item::FieldDef(expr)) => expr)
     }
 
+    #[allow(unused)]
     pub fn unwrap_mod(&self) -> &Module<'a> {
         unwrap_matches!(self, Node::Item(Item::Mod(expr)) => expr)
     }
@@ -169,6 +172,7 @@ pub enum Item<'a> {
 }
 
 impl<'a> Item<'a> {
+    #[allow(unused)]
     pub fn unwrap_fn(&self) -> &Fn<'a> {
         unwrap_matches!(self, Item::Fn(expr) => expr)
     }
@@ -177,10 +181,12 @@ impl<'a> Item<'a> {
         unwrap_matches!(self, Item::TypeDef(expr) => expr)
     }
 
+    #[allow(unused)]
     pub fn unwrap_variant_def(&self) -> &VariantDef<'a> {
         unwrap_matches!(self, Item::VariantDef(expr) => expr)
     }
 
+    #[allow(unused)]
     pub fn unwrap_field_def(&self) -> &FieldDef<'a> {
         unwrap_matches!(self, Item::FieldDef(expr) => expr)
     }
@@ -189,6 +195,7 @@ impl<'a> Item<'a> {
         unwrap_matches!(self, Item::Mod(expr) => expr)
     }
 
+    #[allow(unused)]
     pub fn unwrap_use(&self) -> &Use<'a> {
         unwrap_matches!(self, Item::Use(u) => u)
     }
@@ -283,20 +290,12 @@ pub enum ExprKind<'a> {
     Lit(Literal),
     Path(Path<'a>),
     FnCall(FnCall<'a>),
-    MethodCall(MethodCall<'a>),
     TypeInit(TypeInit<'a>),
     FieldInit(FieldInit<'a>),
 }
 
 #[derive(Copy, Clone, Debug)]
 pub struct FnCall<'a> {
-    pub func: &'a Expr<'a>,
-    pub args: &'a [&'a Expr<'a>],
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct MethodCall<'a> {
-    pub receiver: &'a Expr<'a>,
     pub func: &'a Expr<'a>,
     pub args: &'a [&'a Expr<'a>],
 }
@@ -313,43 +312,6 @@ pub struct FieldInit<'a> {
 pub struct TypeInit<'a> {
     pub path: &'a Expr<'a>,
     pub field_inits: &'a [&'a FieldInit<'a>],
-}
-
-impl<'a> ExprKind<'a> {
-    pub fn op_string(&self) -> String {
-        match self {
-            ExprKind::BinOp(op, _, _) => match op {
-                BinOp::Dot => ".".into(),
-                BinOp::Add => "+".into(),
-                BinOp::Sub => "-".into(),
-                BinOp::Div => "/".into(),
-                BinOp::Mul => "*".into(),
-            },
-            ExprKind::UnOp(op, _) => match op {
-                UnOp::Neg => "-".into(),
-                UnOp::Call => "Call".into(),
-            },
-            ExprKind::Lit(l) => match l {
-                Literal::Float(f) => f.to_string(),
-                Literal::Int(i) => i.to_string(),
-            },
-            ExprKind::Block(_) => "".to_string(),
-            ExprKind::Let(..) => "".to_string(),
-            ExprKind::Path(path) => {
-                let mut path_string = String::new();
-                for (segment, _) in &path.segments[..path.segments.len() - 1] {
-                    path_string.push_str(&segment);
-                    path_string.push_str("::");
-                }
-                path_string.push_str(&path.segments.last().unwrap().0);
-                path_string
-            }
-            ExprKind::TypeInit(..) => "".to_string(),
-            ExprKind::FieldInit(..) => "".to_string(),
-            ExprKind::FnCall(..) => "".to_string(),
-            ExprKind::MethodCall(..) => "".to_string(),
-        }
-    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
