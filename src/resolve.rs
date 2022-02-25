@@ -7,6 +7,7 @@ use std::collections::HashMap;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DefKind {
     Adt,
+    Variant,
     Func,
     Mod,
     Field,
@@ -190,6 +191,7 @@ impl<'ast> Resolver<'ast> {
 
                     if let Some(&res) = self.resolutions.get(&path.id) {
                         let id = match res {
+                            Res::Def(DefKind::Variant, id) => id,
                             Res::Def(DefKind::Adt, id) => id,
                             Res::Def(DefKind::Field | DefKind::Func | DefKind::Mod, _)
                             | Res::Local(_) => unreachable!(),
@@ -339,7 +341,7 @@ impl<'ast> Resolver<'ast> {
                     match i {
                         Item::Mod(_) => DefKind::Mod,
                         Item::TypeDef(_) => DefKind::Adt,
-                        Item::VariantDef(_) => DefKind::Adt,
+                        Item::VariantDef(_) => DefKind::Variant,
                         Item::Fn(_) => DefKind::Func,
                         Item::Use(_) | Item::FieldDef(_) => unreachable!(),
                     },

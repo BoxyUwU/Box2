@@ -1,11 +1,12 @@
 use crate::tokenize::{Literal, Span};
 use bumpalo::Bump;
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::HashMap};
 
 #[derive(Default)]
 pub struct Nodes<'a> {
     pub arena: Bump,
     pub ids: RefCell<Vec<&'a Node<'a>>>,
+    variant_parent: RefCell<HashMap<NodeId, NodeId>>,
 }
 
 impl<'a> Nodes<'a> {
@@ -18,10 +19,17 @@ impl<'a> Nodes<'a> {
     }
 
     pub fn push_node(&'a self, f: impl FnOnce(NodeId) -> Node<'a>) -> &'a Node<'a> {
-        // FIXME hold `ids.borrow_mut` across the `f()`
-        let id = NodeId(self.ids.borrow_mut().len());
-        let node = self.arena.alloc(f(id));
-        self.ids.borrow_mut().push(&*node);
+        let mut ids = self.ids.borrow_mut();
+        let id = NodeId(ids.len());
+        let node = f(id);
+        if let Node::Item(Item::TypeDef(TypeDef { id, variants, .. })) = node {
+            let mut variant_parents = self.variant_parent.borrow_mut();
+            for variant in variants {
+                variant_parents.insert(variant.id, id);
+            }
+        }
+        let node = self.arena.alloc(node);
+        ids.push(&*node);
         node
     }
 
@@ -71,6 +79,11 @@ impl<'a> Nodes<'a> {
 
     pub fn push_param(&'a self, f: impl FnOnce(NodeId) -> Param<'a>) -> &Param {
         self.push_node(|id| Node::Param(f(id))).unwrap_param()
+    }
+
+    pub fn get_variants_adt(&'a self, variant: NodeId) -> &'a TypeDef {
+        let parent = self.variant_parent.borrow()[&variant];
+        self.get(parent).unwrap_type_def()
     }
 }
 

@@ -156,21 +156,23 @@ pub fn typeck_expr<'ast>(
         }
         ExprKind::Block(stmts) => {
             // fixme  block layout is fucky
-            for (expr, semi) in stmts {
+            for (expr, _) in stmts {
                 let var = infer_ctx.new_var();
                 node_tys.insert(expr.id, var);
-                if *semi == false {
-                    infer_ctx.eq(Ty::Infer(var), Ty::Infer(node_tys[&this_expr.id]));
-                } else {
-                    // eq self with `()`
-                }
                 typeck_expr(expr, ast, resolutions, infer_ctx, node_tys);
+            }
+            
+            if let Some((expr, false)) = stmts.last() {
+                let var = node_tys[&expr.id];
+                infer_ctx.eq(Ty::Infer(var), Ty::Infer(node_tys[&this_expr.id]));
+                // FIXME eq self with `()` if `None`
+                // FIXME add `Stmt`/`StmtKind`
             }
         }
         ExprKind::TypeInit(TypeInit { path, field_inits }) => {
-            // validate res?
             let id = match resolutions[&path.id] {
                 Res::Def(DefKind::Adt, id) => id,
+                Res::Def(DefKind::Variant, id) => ast.get_variants_adt(id).id,
                 _ => unreachable!(),
             };
             infer_ctx.eq(Ty::Adt(id), Ty::Infer(node_tys[&this_expr.id]));
