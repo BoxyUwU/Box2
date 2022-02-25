@@ -4,9 +4,22 @@ use crate::ast::*;
 use crate::tokenize::Span;
 use std::collections::HashMap;
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DefKind {
+    Adt,
+    Func,
+    Mod,
+    Field,
+}
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Res<Id> {
+    Def(DefKind, Id),
+    Local(Id),
+}
+
 pub struct Resolver<'ast> {
     nodes: &'ast Nodes<'ast>,
-    resolutions: HashMap<NodeId, NodeId>,
+    pub resolutions: HashMap<NodeId, Res<NodeId>>,
     ribs: Vec<Rib>,
     pub errors: Vec<Diagnostic<usize>>,
     // used to prevent cycles when resolving use statements
@@ -119,7 +132,7 @@ impl<'ast> Resolver<'ast> {
 
     fn resolve_fn(&mut self, func: &Fn) {
         for param in func.params {
-            self.resolve_ty(param.ty);
+            self.resolve_ty(param.ty.unwrap());
         }
         if let Some(ret) = func.ret_ty {
             self.resolve_ty(ret);
@@ -159,13 +172,13 @@ impl<'ast> Resolver<'ast> {
                 self.resolve_expr(rhs);
             }
             ExprKind::Lit(_) => (),
-            ExprKind::Let(name, rhs) => {
+            ExprKind::Let(binding, rhs) => {
+                self.resolve_expr(rhs);
                 self.ribs
                     .last_mut()
                     .unwrap()
                     .bindings
-                    .insert(name.to_owned(), expr.id);
-                self.resolve_expr(rhs);
+                    .insert(binding.ident.to_owned(), binding.id);
             }
             ExprKind::Path(path) => drop(self.resolve_path(None, expr.id, &path)),
             ExprKind::TypeInit(ty_init) => {
@@ -176,7 +189,13 @@ impl<'ast> Resolver<'ast> {
                     self.resolve_expr(field_init.expr);
 
                     if let Some(&res) = self.resolutions.get(&path.id) {
-                        match self.nodes.get(res) {
+                        let id = match res {
+                            Res::Def(DefKind::Adt, id) => id,
+                            Res::Def(DefKind::Field | DefKind::Func | DefKind::Mod, _)
+                            | Res::Local(_) => unreachable!(),
+                        };
+
+                        match self.nodes.get(id) {
                             Node::Item(Item::VariantDef(variant_def))
                             | &Node::Item(Item::TypeDef(TypeDef {
                                 variants: &[variant_def @ VariantDef { name: None, .. }],
@@ -185,7 +204,10 @@ impl<'ast> Resolver<'ast> {
                                 let mut resolved = false;
                                 for field in variant_def.field_defs.iter() {
                                     if &field_init.ident == &field.name {
-                                        self.resolutions.insert(field_init.id, field.id);
+                                        self.resolutions.insert(
+                                            field_init.id,
+                                            Res::Def(DefKind::Field, field.id),
+                                        );
                                         resolved = true;
                                         break;
                                     }
@@ -293,8 +315,8 @@ impl<'ast> Resolver<'ast> {
                         .map(|variant| (variant.name.unwrap(), variant.id))
                         .find(|(name, _)| name == segment),
                     Item::Fn(..) => None,
-                    // we replace prev_segment == Item::Use before continueing to next iterations
-                    // and we dont insert resolutions to use items in ribs
+                    // we replace prev_segment == Item::Use before continuing to next iterations
+                    // and we dont insert resolutions to use items in ribs.
                     // we cannot resolve to field defs
                     Item::Use(..) | Item::FieldDef(..) => unreachable!(),
                 }
@@ -311,7 +333,25 @@ impl<'ast> Resolver<'ast> {
                 })
             });
 
-        if let Ok(res) = res {
+        if let Ok(id) = res {
+            let res = match self.nodes.get(id) {
+                Node::Item(i) => Res::Def(
+                    match i {
+                        Item::Mod(_) => DefKind::Mod,
+                        Item::TypeDef(_) => DefKind::Adt,
+                        Item::VariantDef(_) => DefKind::Adt,
+                        Item::Fn(_) => DefKind::Func,
+                        Item::Use(_) | Item::FieldDef(_) => unreachable!(),
+                    },
+                    id,
+                ),
+                Node::Param(_) => Res::Local(id),
+                Node::Expr(Expr {
+                    id: _,
+                    kind: ExprKind::Let(_, _),
+                }) => Res::Local(id),
+                Node::Expr(_) | Node::Ty(_) => unreachable!(),
+            };
             self.resolutions.insert(path_id, res);
         }
         res
@@ -326,7 +366,8 @@ fn diag_unresolved(unresolved: &str, span: Span) -> Diagnostic<usize> {
 
 #[cfg(test)]
 mod test {
-    use crate::{ast::*, resolve::Resolver, tokenize::Tokenizer};
+    use super::*;
+    use crate::tokenize::Tokenizer;
 
     #[test]
     fn resolve_use_eq_items() {
@@ -705,7 +746,10 @@ mod test {
         let anon_ty_id = variant_def.type_defs[0].id;
         let other_field_def = variant_def.field_defs[1];
 
-        assert_eq!(resolver.resolutions[&other_field_def.ty.id], anon_ty_id);
+        assert_eq!(
+            resolver.resolutions[&other_field_def.ty.id],
+            Res::Def(DefKind::Adt, anon_ty_id)
+        );
         assert_eq!(resolver.errors.len(), 0);
     }
 

@@ -1,4 +1,5 @@
 #![feature(type_alias_impl_trait)]
+#![feature(map_try_insert)]
 
 macro_rules! unwrap_matches {
     ($e:expr, $p:pat) => {
@@ -19,6 +20,7 @@ mod ast;
 mod parser;
 mod resolve;
 mod tokenize;
+mod typeck;
 
 fn main() {
     use ast::Nodes;
@@ -48,4 +50,6 @@ fn main() {
     for diag in &resolver.errors {
         codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
     }
+
+    typeck::typeck_item_recursive(&ast::Item::Mod(*root_mod), &nodes, &resolver.resolutions);
 }

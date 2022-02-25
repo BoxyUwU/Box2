@@ -18,6 +18,7 @@ impl<'a> Nodes<'a> {
     }
 
     pub fn push_node(&'a self, f: impl FnOnce(NodeId) -> Node<'a>) -> &'a Node<'a> {
+        // FIXME hold `ids.borrow_mut` across the `f()`
         let id = NodeId(self.ids.borrow_mut().len());
         let node = self.arena.alloc(f(id));
         self.ids.borrow_mut().push(&*node);
@@ -245,7 +246,7 @@ pub struct FieldDef<'a> {
 pub struct Param<'a> {
     pub id: NodeId,
     pub ident: &'a str,
-    pub ty: &'a Ty<'a>,
+    pub ty: Option<&'a Ty<'a>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -274,7 +275,7 @@ pub struct Expr<'a> {
 
 #[derive(Copy, Clone, Debug)]
 pub enum ExprKind<'a> {
-    Let(&'a str, &'a Expr<'a>),
+    Let(&'a Param<'a>, &'a Expr<'a>),
     Block(&'a [(&'a Expr<'a>, bool)]),
     BinOp(BinOp, &'a Expr<'a>, &'a Expr<'a>),
     UnOp(UnOp, &'a Expr<'a>),

@@ -295,7 +295,12 @@ fn parse_let_expr<'a>(
     tok.next_if(Token::Eq)
         .map_err(|(found, span)| diag_expected_found("=", found, span))?;
     let expr = parse_expr(tok, nodes, 0)?;
-    Ok(nodes.push_expr(ExprKind::Let(name, expr)))
+    let binding = nodes.push_param(|id| Param {
+        id,
+        ident: name,
+        ty: None,
+    });
+    Ok(nodes.push_expr(ExprKind::Let(binding, expr)))
 }
 
 pub fn parse_block_expr<'a>(
@@ -338,7 +343,11 @@ pub fn parse_fn<'a>(
         tok.next_if(Token::Colon)
             .map_err(|(found, span)| diag_expected_found(":", found, span))?;
         let ty = parse_ty(tok, nodes)?;
-        params.push(nodes.push_param(|id| Param { id, ident, ty }));
+        params.push(nodes.push_param(|id| Param {
+            id,
+            ident,
+            ty: Some(ty),
+        }));
 
         match tok.next_if(Token::Comma) {
             Ok(_) => continue,
