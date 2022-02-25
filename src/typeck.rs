@@ -37,11 +37,11 @@ pub fn typeck_item_recursive<'ast>(
 
             let var = infer_ctx.new_var();
             node_tys.insert(body.id, var);
-            if let Some(ret_ty) = ret_ty {
-                // FIXME add a `()` for none
-                let ret_ty = ast_ty_to_ty(ret_ty, resolutions);
-                infer_ctx.eq(Ty::Infer(var), ret_ty);
-            }
+            let ret_ty = match ret_ty {
+                Some(ret_ty) => ast_ty_to_ty(ret_ty, resolutions),
+                None => Ty::Unit,
+            };
+            infer_ctx.eq(Ty::Infer(var), ret_ty);
 
             typeck_expr(body, ast, resolutions, &mut infer_ctx, &mut node_tys);
 
@@ -51,7 +51,6 @@ pub fn typeck_item_recursive<'ast>(
                 .map(|(id, ty)| (id, infer_ctx.resolve_ty(Ty::Infer(*ty))))
                 .collect::<Vec<_>>());
             dbg!(&infer_ctx.errors);
-            dbg!(resolutions);
         }
         Item::Mod(Module { items, .. }) => {
             for item in *items {
@@ -65,6 +64,7 @@ pub fn typeck_item_recursive<'ast>(
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Ty {
+    Unit,
     Infer(InferId),
     Adt(NodeId),
 }
@@ -100,7 +100,7 @@ impl InferCtxt {
     fn resolve_ty(&self, mut ty: Ty) -> Ty {
         loop {
             let infer = match ty {
-                Ty::Adt(_) => return ty,
+                Ty::Adt(_) | Ty::Unit => return ty,
                 Ty::Infer(inf) => inf,
             };
 
@@ -123,13 +123,13 @@ impl InferCtxt {
                     self.constraints.try_insert(a, Ty::Infer(b)).unwrap();
                 }
             },
-            (Ty::Infer(a), Ty::Adt(_)) => {
+            (Ty::Infer(a), Ty::Adt(_) | Ty::Unit) => {
                 self.constraints.try_insert(a, b).unwrap();
             }
-            (Ty::Adt(_), Ty::Infer(b)) => {
+            (Ty::Adt(_) | Ty::Unit, Ty::Infer(b)) => {
                 self.constraints.try_insert(b, a).unwrap();
             }
-            (Ty::Adt(_), Ty::Adt(_)) => match a == b {
+            (Ty::Adt(_) | Ty::Unit, Ty::Adt(_) | Ty::Unit) => match a == b {
                 true => (),
                 false => self.errors.push(ExpectedFound(a, b)),
             },
@@ -146,13 +146,14 @@ pub fn typeck_expr<'ast>(
 ) {
     match this_expr.kind {
         ExprKind::Let(binding, rhs) => {
+            infer_ctx.eq(Ty::Infer(node_tys[&this_expr.id]), Ty::Unit);
+
             let pat_var = infer_ctx.new_var();
             node_tys.insert(binding.id, pat_var);
             let rhs_var = infer_ctx.new_var();
             node_tys.insert(rhs.id, rhs_var);
             infer_ctx.eq(Ty::Infer(pat_var), Ty::Infer(rhs_var));
             typeck_expr(rhs, ast, resolutions, infer_ctx, node_tys);
-            // eq self with `()`
         }
         ExprKind::Block(stmts) => {
             // fixme  block layout is fucky
@@ -161,12 +162,14 @@ pub fn typeck_expr<'ast>(
                 node_tys.insert(expr.id, var);
                 typeck_expr(expr, ast, resolutions, infer_ctx, node_tys);
             }
-            
-            if let Some((expr, false)) = stmts.last() {
-                let var = node_tys[&expr.id];
-                infer_ctx.eq(Ty::Infer(var), Ty::Infer(node_tys[&this_expr.id]));
-                // FIXME eq self with `()` if `None`
-                // FIXME add `Stmt`/`StmtKind`
+
+            match stmts.last() {
+                Some((expr, false)) => {
+                    let var = node_tys[&expr.id];
+                    infer_ctx.eq(Ty::Infer(var), Ty::Infer(node_tys[&this_expr.id]));
+                    // FIXME add `Stmt`/`StmtKind`
+                }
+                _ => infer_ctx.eq(Ty::Infer(node_tys[&this_expr.id]), Ty::Unit),
             }
         }
         ExprKind::TypeInit(TypeInit { path, field_inits }) => {
