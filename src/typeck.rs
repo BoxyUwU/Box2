@@ -3,6 +3,7 @@ use std::{collections::HashMap, iter::FromIterator};
 use crate::{
     ast::*,
     resolve::{DefKind, Res},
+    tokenize::Literal,
 };
 
 fn ast_ty_to_ty(ty: &crate::ast::Ty, resolutions: &HashMap<NodeId, Res<NodeId>>) -> Ty {
@@ -67,6 +68,8 @@ pub enum Ty {
     Unit,
     Infer(InferId),
     Adt(NodeId),
+    Int,
+    Float,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -100,7 +103,7 @@ impl InferCtxt {
     fn resolve_ty(&self, mut ty: Ty) -> Ty {
         loop {
             let infer = match ty {
-                Ty::Adt(_) | Ty::Unit => return ty,
+                Ty::Float | Ty::Int | Ty::Adt(_) | Ty::Unit => return ty,
                 Ty::Infer(inf) => inf,
             };
 
@@ -123,13 +126,16 @@ impl InferCtxt {
                     self.constraints.try_insert(a, Ty::Infer(b)).unwrap();
                 }
             },
-            (Ty::Infer(a), Ty::Adt(_) | Ty::Unit) => {
+            (Ty::Infer(a), Ty::Float | Ty::Int | Ty::Adt(_) | Ty::Unit) => {
                 self.constraints.try_insert(a, b).unwrap();
             }
-            (Ty::Adt(_) | Ty::Unit, Ty::Infer(b)) => {
+            (Ty::Float | Ty::Adt(_) | Ty::Int | Ty::Unit, Ty::Infer(b)) => {
                 self.constraints.try_insert(b, a).unwrap();
             }
-            (Ty::Adt(_) | Ty::Unit, Ty::Adt(_) | Ty::Unit) => match a == b {
+            (
+                Ty::Adt(_) | Ty::Float | Ty::Unit | Ty::Int,
+                Ty::Int | Ty::Adt(_) | Ty::Float | Ty::Unit,
+            ) => match a == b {
                 true => (),
                 false => self.errors.push(ExpectedFound(a, b)),
             },
@@ -203,9 +209,13 @@ pub fn typeck_expr<'ast>(
             };
             infer_ctx.eq(res_ty, Ty::Infer(node_tys[&this_expr.id]));
         }
+        ExprKind::Lit(Literal::Int(_)) => infer_ctx.eq(Ty::Int, Ty::Infer(node_tys[&this_expr.id])),
+        ExprKind::Lit(Literal::Float(_)) => {
+            infer_ctx.eq(Ty::Float, Ty::Infer(node_tys[&this_expr.id]))
+        }
+
         ExprKind::BinOp(_, _, _) => todo!(),
         ExprKind::UnOp(_, _) => todo!(),
-        ExprKind::Lit(_) => todo!(),
         ExprKind::FnCall(_) => todo!(),
 
         ExprKind::FieldInit(_) => unreachable!(),
