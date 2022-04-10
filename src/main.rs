@@ -1,6 +1,10 @@
 #![feature(type_alias_impl_trait)]
 #![feature(map_try_insert)]
 
+use codespan_reporting::diagnostic::{Diagnostic, Label};
+
+use crate::typeck::TypeckError;
+
 macro_rules! unwrap_matches {
     ($e:expr, $p:pat) => {
         match $e {
@@ -51,5 +55,47 @@ fn main() {
         codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
     }
 
-    typeck::typeck_item_recursive(&ast::Item::Mod(*root_mod), &nodes, &resolver.resolutions);
+    typeck::visit_items(
+        &ast::Item::Mod(*root_mod),
+        &nodes,
+        &resolver.resolutions,
+        &mut |item| match item {
+            ast::Item::Fn(func) => {
+                let (_, errors) = typeck::typeck_fn(func, &nodes, &resolver.resolutions);
+                for e in errors {
+                    match e {
+                        TypeckError::ExpectedFound(typeck::ExpectedFound(a, b, span)) => {
+                            let diag = Diagnostic::error()
+                                .with_message(format!(
+                                    "mismatched types: a:{} b:{}",
+                                    a.pretty(&nodes),
+                                    b.pretty(&nodes),
+                                ))
+                                .with_labels(vec![Label::primary(0, span)]);
+                            codespan_reporting::term::emit(
+                                &mut writer.lock(),
+                                &config,
+                                &files,
+                                &diag,
+                            )
+                            .unwrap();
+                        }
+                        TypeckError::UnconstrainedInfer(_, _, span) => {
+                            let diag = Diagnostic::error()
+                                .with_message(format!("could not infer type"))
+                                .with_labels(vec![Label::primary(0, span)]);
+                            codespan_reporting::term::emit(
+                                &mut writer.lock(),
+                                &config,
+                                &files,
+                                &diag,
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        },
+    );
 }

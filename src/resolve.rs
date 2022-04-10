@@ -154,7 +154,7 @@ impl<'ast> Resolver<'ast> {
 
     fn resolve_expr(&mut self, expr: &Expr) {
         match expr.kind {
-            ExprKind::Block(stmts) => self.with_rib(
+            ExprKind::Block(stmts, _) => self.with_rib(
                 Rib {
                     bindings: HashMap::new(),
                 },
@@ -164,16 +164,16 @@ impl<'ast> Resolver<'ast> {
                     }
                 },
             ),
-            ExprKind::UnOp(_, rhs) => self.resolve_expr(rhs),
-            ExprKind::BinOp(BinOp::Dot, lhs, _) => {
+            ExprKind::UnOp(_, rhs, _) => self.resolve_expr(rhs),
+            ExprKind::BinOp(BinOp::Dot, lhs, _, _) => {
                 self.resolve_expr(lhs);
             }
-            ExprKind::BinOp(_, lhs, rhs) => {
+            ExprKind::BinOp(_, lhs, rhs, _) => {
                 self.resolve_expr(lhs);
                 self.resolve_expr(rhs);
             }
-            ExprKind::Lit(_) => (),
-            ExprKind::Let(binding, rhs) => {
+            ExprKind::Lit(_, _) => (),
+            ExprKind::Let(binding, rhs, _) => {
                 self.resolve_expr(rhs);
                 self.ribs
                     .last_mut()
@@ -350,7 +350,7 @@ impl<'ast> Resolver<'ast> {
                 Node::Param(_) => Res::Local(id),
                 Node::Expr(Expr {
                     id: _,
-                    kind: ExprKind::Let(_, _),
+                    kind: ExprKind::Let(_, _, _),
                 }) => Res::Local(id),
                 Node::Expr(_) | Node::Ty(_) => unreachable!(),
             };

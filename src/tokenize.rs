@@ -15,6 +15,13 @@ impl Span {
             end: range.end,
         }
     }
+
+    pub fn join(self, other: Span) -> Self {
+        Span {
+            start: usize::min(self.start, other.start),
+            end: usize::max(self.end, other.end),
+        }
+    }
 }
 
 impl Into<Range<usize>> for Span {

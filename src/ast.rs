@@ -152,11 +152,13 @@ pub enum Visibility {
 pub struct Ty<'a> {
     pub id: NodeId,
     pub path: Path<'a>,
+    pub span: Span,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Path<'a> {
     pub segments: &'a [(&'a str, Span)],
+    pub span: Span,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -260,6 +262,7 @@ pub struct Param<'a> {
     pub id: NodeId,
     pub ident: &'a str,
     pub ty: Option<&'a Ty<'a>>,
+    pub span: Span,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -286,13 +289,29 @@ pub struct Expr<'a> {
     pub kind: ExprKind<'a>,
 }
 
+impl<'a> Expr<'a> {
+    pub fn span(&self) -> Span {
+        match &self.kind {
+            ExprKind::Let(_, _, span)
+            | ExprKind::Block(_, span)
+            | ExprKind::BinOp(_, _, _, span)
+            | ExprKind::UnOp(_, _, span)
+            | ExprKind::Lit(_, span) => *span,
+            ExprKind::Path(path) => path.span,
+            ExprKind::FnCall(call) => call.span,
+            ExprKind::TypeInit(ty_init) => ty_init.span,
+            ExprKind::FieldInit(field_init) => field_init.span,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum ExprKind<'a> {
-    Let(&'a Param<'a>, &'a Expr<'a>),
-    Block(&'a [(&'a Expr<'a>, bool)]),
-    BinOp(BinOp, &'a Expr<'a>, &'a Expr<'a>),
-    UnOp(UnOp, &'a Expr<'a>),
-    Lit(Literal),
+    Let(&'a Param<'a>, &'a Expr<'a>, Span),
+    Block(&'a [(&'a Expr<'a>, bool)], Span),
+    BinOp(BinOp, &'a Expr<'a>, &'a Expr<'a>, Span),
+    UnOp(UnOp, &'a Expr<'a>, Span),
+    Lit(Literal, Span),
     Path(Path<'a>),
     FnCall(FnCall<'a>),
     TypeInit(TypeInit<'a>),
@@ -303,6 +322,7 @@ pub enum ExprKind<'a> {
 pub struct FnCall<'a> {
     pub func: &'a Expr<'a>,
     pub args: &'a [&'a Expr<'a>],
+    pub span: Span,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -317,6 +337,7 @@ pub struct FieldInit<'a> {
 pub struct TypeInit<'a> {
     pub path: &'a Expr<'a>,
     pub field_inits: &'a [&'a FieldInit<'a>],
+    pub span: Span,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
