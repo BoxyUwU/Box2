@@ -601,9 +601,9 @@ mod test {
                     field: 10,
                 };
 
-                Bar::Bazz {}
+                Bar::Bazz {};
 
-                Blah {}
+                Blah {};
             }
         ";
 
@@ -772,7 +772,7 @@ mod test {
     fn nested_block() {
         let nodes = Nodes::new();
         let root = crate::parser::parse_crate(
-            &mut Tokenizer::new("fn foo() { { let bar = 1; } bar + 1; }"),
+            &mut Tokenizer::new("fn foo() { { let bar = 1; }; bar + 1; }"),
             &nodes,
         )
         .unwrap();

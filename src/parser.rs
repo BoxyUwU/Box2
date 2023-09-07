@@ -336,6 +336,13 @@ pub fn parse_block_expr<'a>(
 
         let expr = parse_expr(tok, nodes, 0)?;
         let terminator = tok.next_if(Token::SemiColon).is_ok();
+        if terminator == false {
+            let (_, end_span) = tok
+                .next_if(Token::RBrace)
+                .map_err(|(found, span)| diag_expected_found("} or ;", found, span))?;
+            break end_span;
+        }
+
         stmts.push((expr, terminator));
     };
 
