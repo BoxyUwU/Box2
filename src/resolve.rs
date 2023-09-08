@@ -290,7 +290,7 @@ impl<'ast> Resolver<'ast> {
 
                                 let path =
                                     unwrap_matches!(&path.kind, ExprKind::Path(path) => path);
-                                let path_span = path.segments.last().unwrap().1;
+                                let path_span = path.segments.last().unwrap().2;
                                 self.errors.push(
                                     Diagnostic::error()
                                         .with_message(message)
@@ -328,13 +328,18 @@ impl<'ast> Resolver<'ast> {
                     start_use_item.name
                 ))
                 .with_labels(vec![
-                    Label::primary(0, start_use_item.path.segments.last().unwrap().1)
+                    Label::primary(0, start_use_item.path.segments.last().unwrap().2)
                         .with_message("use item"),
-                    Label::secondary(0, cyclic_use_item.path.segments.last().unwrap().1)
+                    Label::secondary(0, cyclic_use_item.path.segments.last().unwrap().2)
                         .with_message("which requires resolving this cyclic use item"),
                 ]);
             self.errors.push(cycle_diagnostic);
             return Err(());
+        }
+
+        for args in path.segments.iter().map(|segment| segment.1) {
+            // FIXME: not super correct wrt `resolve_in_item` maybe just remove that
+            self.resolve_gen_args(args)?;
         }
 
         let first_seg = &path.segments[0];
@@ -347,7 +352,7 @@ impl<'ast> Resolver<'ast> {
                 .find_map(|rib| rib.bindings.get(first_seg.0).copied())
             {
                 Some(id) => id,
-                None => return Err(self.errors.push(diag_unresolved(first_seg.0, first_seg.1))),
+                None => return Err(self.errors.push(diag_unresolved(first_seg.0, first_seg.2))),
             },
         };
 
@@ -355,7 +360,7 @@ impl<'ast> Resolver<'ast> {
             .segments
             .iter()
             .skip(resolve_in_item.is_none() as usize)
-            .try_fold(first_seg, |prev_segment, (segment, span)| {
+            .try_fold(first_seg, |prev_segment, (segment, _, span)| {
                 match self.nodes.get(prev_segment).unwrap_item() {
                     Item::Mod(module) => module
                         .items
@@ -430,6 +435,16 @@ impl<'ast> Resolver<'ast> {
             self.resolutions.insert(path_id, res);
         }
         res
+    }
+
+    fn resolve_gen_args(&mut self, args: GenArgs<'_>) -> Result<(), ()> {
+        for arg in args.0 {
+            match arg {
+                GenArg::Ty(ty) => self.resolve_ty(ty),
+            };
+        }
+
+        Ok(())
     }
 }
 

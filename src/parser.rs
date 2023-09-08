@@ -143,6 +143,8 @@ impl<'a> Token<'a> {
                 Token::RParen => ")",
                 Token::LBrace => "{",
                 Token::RBrace => "}",
+                Token::LSquare => "[",
+                Token::RSquare => "]",
                 Token::Error => "ERROR",
 
                 Token::Ident(_) | Token::Kw(_) | Token::Literal(_) => unreachable!(),
@@ -281,21 +283,55 @@ fn parse_path<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
 ) -> Result<Path<'a>, Diagnostic<usize>> {
-    let ident = |tok: &mut Tokenizer<'a>| {
-        tok.next_if_ident()
-            .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))
+    let parse_seg = |tok: &mut Tokenizer<'a>, nodes: &'a Nodes<'a>| {
+        let (ident, span) = tok
+            .next_if_ident()
+            .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
+        let args = parse_opt_gen_args(tok, nodes)?;
+        Ok((ident, args, span))
     };
 
-    let mut segments = vec![ident(tok)?];
+    let mut segments = vec![parse_seg(tok, nodes)?];
     while let Ok(_) = tok.next_if(Token::PathSep) {
-        let segment = ident(tok)?;
+        let segment = parse_seg(tok, nodes)?;
         segments.push(segment);
     }
 
     Ok(Path {
-        span: segments[0].1.join(segments.last().unwrap().1),
+        span: segments[0].2.join(segments.last().unwrap().2),
         segments: nodes.arena.alloc_slice_fill_iter(segments),
     })
+}
+
+fn parse_opt_gen_args<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &'a Nodes<'a>,
+) -> Result<GenArgs<'a>, Diagnostic<usize>> {
+    if let Err(_) = tok.next_if(Token::LSquare) {
+        return Ok(GenArgs(&[]));
+    }
+
+    let mut args = vec![];
+    while let Err(_) = tok.next_if(Token::RSquare) {
+        args.push(parse_gen_arg(tok, nodes)?);
+
+        if tok.next_if(Token::Comma).is_err() && tok.peek_if(Token::RSquare).is_err() {
+            let (found, span) = tok
+                .peek()
+                .map(|&(tok, sp)| (tok, sp))
+                .unwrap_or((Token::Error, Span::new(0..0)));
+            return Err(diag_expected_found("] or ,", found, span));
+        }
+    }
+
+    Ok(GenArgs(nodes.arena.alloc_slice_fill_iter(args)))
+}
+
+fn parse_gen_arg<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &'a Nodes<'a>,
+) -> Result<GenArg<'a>, Diagnostic<usize>> {
+    parse_ty(tok, nodes).map(|ty| GenArg::Ty(*ty))
 }
 
 fn parse_let_expr<'a>(
@@ -589,9 +625,12 @@ fn parse_fields<'a>(
                 nodes.push_ty(|id| Ty {
                     id,
                     path: Path {
-                        segments: nodes
-                            .arena
-                            .alloc_slice_fill_iter([(ty_def.name, ty_def.name_span)]),
+                        segments: nodes.arena.alloc_slice_fill_iter([(
+                            ty_def.name,
+                            // FIXME: is this the correct way for us to represent this?
+                            GenArgs(&[]),
+                            ty_def.name_span,
+                        )]),
                         span: ty_def.name_span,
                     },
                     span: ty_def.name_span,
@@ -746,26 +785,13 @@ pub fn parse_ty<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
 ) -> Result<&'a Ty<'a>, Diagnostic<usize>> {
-    tok.peek_if_ident()
-        .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
-    if let Some((Token::PathSep, _)) = tok.peek_second() {
-        let path = parse_path(tok, nodes)?;
-        Ok(nodes.push_ty(|id| Ty {
-            id,
-            path,
-            span: path.span,
-        }))
-    } else {
-        let (ident, span) = tok.next_if_ident().unwrap();
-        Ok(nodes.push_ty(|id| Ty {
-            id,
-            path: Path {
-                segments: nodes.arena.alloc_slice_fill_iter([(ident, span)]),
-                span,
-            },
-            span,
-        }))
-    }
+    let path = parse_path(tok, nodes)?;
+
+    Ok(nodes.push_ty(|id| Ty {
+        id,
+        path,
+        span: path.span,
+    }))
 }
 
 pub fn parse_trait<'a>(

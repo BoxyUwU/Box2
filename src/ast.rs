@@ -188,8 +188,16 @@ pub struct Ty<'a> {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
+pub enum GenArg<'a> {
+    Ty(Ty<'a>),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct GenArgs<'a>(pub &'a [GenArg<'a>]);
+
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Path<'a> {
-    pub segments: &'a [(&'a str, Span)],
+    pub segments: &'a [(&'a str, GenArgs<'a>, Span)],
     pub span: Span,
 }
 
