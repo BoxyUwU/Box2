@@ -11,6 +11,8 @@ pub enum DefKind {
     Func,
     Mod,
     Field,
+    Trait,
+    TypeAlias,
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Res<Id> {
@@ -78,6 +80,9 @@ impl<'ast> Resolver<'ast> {
                 Item::Fn(func) => (func.name.to_owned(), func.id),
                 Item::TypeDef(ty_def) => (ty_def.name.to_owned(), ty_def.id),
                 Item::Mod(module) => (module.name.to_owned(), module.id),
+                Item::Trait(t) => (t.ident.to_owned(), t.id),
+                Item::TypeAlias(t) => (t.name.to_owned(), t.id),
+                Item::Impl(..) => return None,
                 Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
             })
         }));
@@ -88,11 +93,56 @@ impl<'ast> Resolver<'ast> {
                     Item::Fn(func) => this.resolve_fn(func),
                     Item::Mod(module) => this.resolve_mod(module),
                     Item::TypeDef(ty_def) => this.resolve_type_def(ty_def),
+                    Item::Impl(impl_) => this.resolve_impl(impl_),
+                    Item::Trait(trait_) => this.resolve_trait(trait_),
+                    Item::TypeAlias(alias) => match alias.ty {
+                        Some(ty) => this.resolve_ty(ty),
+                        None => (),
+                    },
                     Item::Use(..) => (), // handled above when building bindings
                     Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
                 }
             }
         })
+    }
+
+    fn resolve_impl(&mut self, impl_: &Impl<'_>) {
+        let Impl {
+            id,
+            span: _,
+            of_trait,
+            self_ty,
+            assoc_items,
+        } = impl_;
+
+        let _ = self.resolve_path(None, *id, of_trait);
+        self.resolve_ty(self_ty);
+        for assoc_item in *assoc_items {
+            self.resolve_associated_item(assoc_item);
+        }
+    }
+
+    fn resolve_trait(&mut self, trait_: &Trait<'_>) {
+        let Trait {
+            id: _,
+            span: _,
+            visibility: _,
+            ident: _,
+            assoc_items,
+        } = trait_;
+        for assoc_item in *assoc_items {
+            self.resolve_associated_item(assoc_item);
+        }
+    }
+
+    fn resolve_associated_item(&mut self, assoc_item: &AssocItem<'_>) {
+        match assoc_item {
+            AssocItem::Fn(f) => self.resolve_fn(f),
+            AssocItem::Type(t) => match t.ty {
+                Some(ty) => self.resolve_ty(ty),
+                None => (),
+            },
+        }
     }
 
     fn resolve_type_def(&mut self, ty_def: &TypeDef) {
@@ -140,16 +190,18 @@ impl<'ast> Resolver<'ast> {
         }
 
         use std::iter::FromIterator;
-        self.with_rib(
-            Rib {
-                bindings: HashMap::from_iter(
-                    func.params
-                        .iter()
-                        .map(|param| (param.ident.to_string(), param.id)),
-                ),
-            },
-            |this| this.resolve_expr(func.body),
-        );
+        if let Some(body) = func.body {
+            self.with_rib(
+                Rib {
+                    bindings: HashMap::from_iter(
+                        func.params
+                            .iter()
+                            .map(|param| (param.ident.to_string(), param.id)),
+                    ),
+                },
+                |this| this.resolve_expr(body),
+            );
+        }
     }
 
     fn resolve_expr(&mut self, expr: &Expr) {
@@ -193,7 +245,15 @@ impl<'ast> Resolver<'ast> {
                         let id = match res {
                             Res::Def(DefKind::Variant, id) => id,
                             Res::Def(DefKind::Adt, id) => id,
-                            Res::Def(DefKind::Field | DefKind::Func | DefKind::Mod, _)
+                            // FIXME: probably ICE
+                            Res::Def(
+                                DefKind::Trait
+                                | DefKind::TypeAlias
+                                | DefKind::Field
+                                | DefKind::Func
+                                | DefKind::Mod,
+                                _,
+                            )
                             | Res::Local(_) => unreachable!(),
                         };
 
@@ -315,12 +375,22 @@ impl<'ast> Resolver<'ast> {
                         .variants
                         .iter()
                         .map(|variant| (variant.name.unwrap(), variant.id))
-                        .find(|(name, _)| name == segment),
+                        .find(|(name, _)| segment == name),
                     Item::Fn(..) => None,
                     // we replace prev_segment == Item::Use before continuing to next iterations
                     // and we dont insert resolutions to use items in ribs.
                     // we cannot resolve to field defs
                     Item::Use(..) | Item::FieldDef(..) => unreachable!(),
+                    Item::Impl(_) => unreachable!(),
+                    Item::TypeAlias(_) => None,
+                    Item::Trait(trait_) => trait_
+                        .assoc_items
+                        .iter()
+                        .map(|assoc_item| match assoc_item {
+                            AssocItem::Fn(f) => (f.name, f.id),
+                            AssocItem::Type(t) => (t.name, t.id),
+                        })
+                        .find(|(name, _)| segment == name),
                 }
                 .map(|(_, id)| id)
                 .ok_or_else(|| self.errors.push(diag_unresolved(segment, *span)))
@@ -344,6 +414,9 @@ impl<'ast> Resolver<'ast> {
                         Item::VariantDef(_) => DefKind::Variant,
                         Item::Fn(_) => DefKind::Func,
                         Item::Use(_) | Item::FieldDef(_) => unreachable!(),
+                        Item::Impl(_) => unreachable!(),
+                        Item::TypeAlias(_) => DefKind::TypeAlias,
+                        Item::Trait(_) => DefKind::Trait,
                     },
                     id,
                 ),

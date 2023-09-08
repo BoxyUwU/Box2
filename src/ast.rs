@@ -81,6 +81,21 @@ impl<'a> Nodes<'a> {
         self.push_node(|id| Node::Param(f(id))).unwrap_param()
     }
 
+    pub fn push_ty_alias(&'a self, f: impl FnOnce(NodeId) -> TypeAlias<'a>) -> &Item {
+        self.push_node(|id| Node::Item(Item::TypeAlias(f(id))))
+            .unwrap_item()
+    }
+
+    pub fn push_trait(&'a self, f: impl FnOnce(NodeId) -> Trait<'a>) -> &Item {
+        self.push_node(|id| Node::Item(Item::Trait(f(id))))
+            .unwrap_item()
+    }
+
+    pub fn push_impl(&'a self, f: impl FnOnce(NodeId) -> Impl<'a>) -> &Item {
+        self.push_node(|id| Node::Item(Item::Impl(f(id))))
+            .unwrap_item()
+    }
+
     pub fn get_variants_adt(&'a self, variant: NodeId) -> &'a TypeDef {
         let parent = self.variant_parent.borrow()[&variant];
         self.get(parent).unwrap_type_def()
@@ -130,6 +145,21 @@ impl<'a> Node<'a> {
         unwrap_matches!(self, Node::Item(Item::Mod(expr)) => expr)
     }
 
+    #[allow(unused)]
+    pub fn unwrap_trait(&self) -> &Trait<'a> {
+        unwrap_matches!(self, Node::Item(Item::Trait(trait_)) => trait_)
+    }
+
+    #[allow(unused)]
+    pub fn unwrap_impl(&self) -> &Impl<'a> {
+        unwrap_matches!(self, Node::Item(Item::Impl(impl_)) => impl_)
+    }
+
+    #[allow(unused)]
+    pub fn unwrap_type_alias(&self) -> &TypeAlias<'a> {
+        unwrap_matches!(self, Node::Item(Item::TypeAlias(alias)) => alias)
+    }
+
     pub fn unwrap_ty(&self) -> &Ty {
         unwrap_matches!(self, Node::Ty(expr) => expr)
     }
@@ -167,8 +197,11 @@ pub enum Item<'a> {
     TypeDef(TypeDef<'a>),
     VariantDef(VariantDef<'a>),
     FieldDef(FieldDef<'a>),
+    TypeAlias(TypeAlias<'a>),
     Fn(Fn<'a>),
     Use(Use<'a>),
+    Trait(Trait<'a>),
+    Impl(Impl<'a>),
 }
 
 impl<'a> Item<'a> {
@@ -200,6 +233,21 @@ impl<'a> Item<'a> {
         unwrap_matches!(self, Item::Use(u) => u)
     }
 
+    #[allow(unused)]
+    pub fn unwrap_trait(&self) -> &Trait<'a> {
+        unwrap_matches!(self, Item::Trait(t) => t)
+    }
+
+    #[allow(unused)]
+    pub fn unwrap_impl(&self) -> &Impl<'a> {
+        unwrap_matches!(self, Item::Impl(i) => i)
+    }
+
+    #[allow(unused)]
+    pub fn unwrap_ty_alias(&self) -> &TypeAlias<'a> {
+        unwrap_matches!(self, Item::TypeAlias(t) => t)
+    }
+
     pub fn id(&self) -> NodeId {
         match self {
             Item::Mod(module) => module.id,
@@ -208,6 +256,9 @@ impl<'a> Item<'a> {
             Item::Fn(func) => func.id,
             Item::FieldDef(def) => def.id,
             Item::Use(u) => u.id,
+            Item::TypeAlias(t) => t.id,
+            Item::Trait(t) => t.id,
+            Item::Impl(i) => i.id,
         }
     }
 
@@ -219,6 +270,9 @@ impl<'a> Item<'a> {
             Item::FieldDef(def) => def.name,
             Item::Fn(f) => f.name,
             Item::Use(u) => u.name,
+            Item::TypeAlias(t) => t.name,
+            Item::Trait(t) => t.ident,
+            Item::Impl(_) => return None,
         })
     }
 }
@@ -229,6 +283,15 @@ pub struct Module<'a> {
     pub visibility: Visibility,
     pub name: &'a str,
     pub items: &'a [&'a Item<'a>],
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct TypeAlias<'a> {
+    pub id: NodeId,
+    pub visibility: Visibility,
+    pub name: &'a str,
+    pub name_span: Span,
+    pub ty: Option<&'a Ty<'a>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -272,7 +335,7 @@ pub struct Fn<'a> {
     pub name: &'a str,
     pub params: &'a [&'a Param<'a>],
     pub ret_ty: Option<&'a Ty<'a>>,
-    pub body: &'a Expr<'a>,
+    pub body: Option<&'a Expr<'a>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -281,6 +344,33 @@ pub struct Use<'a> {
     pub visibility: Visibility,
     pub path: Path<'a>,
     pub name: &'a str,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Trait<'a> {
+    pub id: NodeId,
+    pub span: Span,
+
+    pub visibility: Visibility,
+    pub ident: &'a str,
+    pub assoc_items: &'a [AssocItem<'a>],
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum AssocItem<'a> {
+    Fn(&'a Fn<'a>),
+    Type(&'a TypeAlias<'a>),
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Impl<'a> {
+    pub id: NodeId,
+    pub span: Span,
+
+    pub of_trait: Path<'a>,
+    pub self_ty: &'a Ty<'a>,
+
+    pub assoc_items: &'a [AssocItem<'a>],
 }
 
 #[derive(Copy, Clone, Debug)]

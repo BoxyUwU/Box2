@@ -30,6 +30,10 @@ pub fn visit_items<'ast>(
         }
         Item::TypeDef(_) | Item::VariantDef(_) | Item::FieldDef(_) => return, /* FIXME: field tys are exprs */
         Item::Use(_) => return,
+        // FIXME: actually typeck this stuff
+        Item::TypeAlias(_) => (),
+        Item::Trait(_) => (),
+        Item::Impl(_) => (),
     }
 }
 pub enum TypeckError {
@@ -46,6 +50,11 @@ pub fn typeck_fn<'ast>(
     ast: &'ast Nodes<'ast>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
 ) -> (HashMap<NodeId, Ty>, Vec<TypeckError>) {
+    let body = match body {
+        Some(body) => body,
+        None => todo!(),
+    };
+
     // FIXME: param tys wf
     // FIXME: ret tys wf
     let mut infer_ctx = InferCtxt::new();

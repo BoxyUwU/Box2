@@ -111,6 +111,9 @@ impl Kw {
             Kw::Fn => "fn".into(),
             Kw::Pub => "pub".into(),
             Kw::Type => "type".into(),
+            Kw::Impl => "impl".into(),
+            Kw::Trait => "trait".into(),
+            Kw::For => "for".into(),
         }
     }
 }
@@ -356,7 +359,7 @@ pub fn parse_fn<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
 ) -> Result<&'a Item<'a>, Diagnostic<usize>> {
-    // (pub)? fn ( (ident: ty),* ) (-> ty)? { expr }
+    // (pub)? fn ( (ident: ty),* ) (-> ty)? ({ expr } OR ;)
 
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
@@ -397,8 +400,11 @@ pub fn parse_fn<'a>(
         ret_ty = Some(parse_ty(tok, nodes)?);
     }
 
-    let body = parse_block_expr(tok, nodes)?;
-    Ok(nodes.push_fn(|id| Fn {
+    let body = match tok.next_if(Token::SemiColon) {
+        Ok(_) => None,
+        Err(_) => Some(parse_block_expr(tok, nodes)?),
+    };
+    Ok(nodes.push_fn(|id: NodeId| Fn {
         id,
         visibility,
         name,
@@ -440,6 +446,43 @@ pub fn parse_type_def<'a>(
         prefix.push_str(&ty_name);
         let prefix = nodes.arena.alloc_str(&prefix);
         name = Some((prefix, field_name_span));
+    }
+
+    if let Ok(_) = tok.next_if(Token::SemiColon) {
+        if parent_field.is_some() {
+            Err(Diagnostic::error()
+                .with_message("type alias definition not allowed as field type")
+                .with_labels(vec![Label::primary(0, type_span)]))?;
+        }
+
+        let (name, name_span) = name.unwrap();
+        return Ok(nodes.push_ty_alias(|id| TypeAlias {
+            id,
+            visibility,
+            name,
+            name_span,
+            ty: None,
+        }));
+    }
+
+    if let Ok(_) = tok.next_if(Token::Eq) {
+        if parent_field.is_some() {
+            Err(Diagnostic::error()
+                .with_message("type alias definition not allowed as field type")
+                .with_labels(vec![Label::primary(0, type_span)]))?;
+        }
+
+        let ty = parse_ty(tok, nodes)?;
+        tok.next_if(Token::SemiColon)
+            .map_err(|(found, span)| diag_expected_found(";", found, span))?;
+        let (name, name_span) = name.unwrap();
+        return Ok(nodes.push_ty_alias(|id| TypeAlias {
+            id,
+            visibility,
+            name,
+            name_span,
+            ty: Some(ty),
+        }));
     }
 
     tok.next_if(Token::LBrace)
@@ -607,6 +650,8 @@ pub fn parse_mod<'a>(
             Token::Kw(Kw::Type) => parse_type_def(tok, nodes, None)?,
             Token::Kw(Kw::Fn) => parse_fn(tok, nodes)?,
             Token::Kw(Kw::Use) => parse_use(tok, nodes)?,
+            Token::Kw(Kw::Trait) => parse_trait(tok, nodes)?,
+            Token::Kw(Kw::Impl) => parse_impl(tok, nodes)?,
             _ => {
                 return Err(Diagnostic::error()
                     .with_message("non-item in module")
@@ -675,6 +720,8 @@ pub fn parse_crate<'a>(
             Token::Kw(Kw::Type) => parse_type_def(tok, nodes, None)?,
             Token::Kw(Kw::Fn) => parse_fn(tok, nodes)?,
             Token::Kw(Kw::Use) => parse_use(tok, nodes)?,
+            Token::Kw(Kw::Trait) => parse_trait(tok, nodes)?,
+            Token::Kw(Kw::Impl) => parse_impl(tok, nodes)?,
             _ => {
                 return Err(Diagnostic::error()
                     .with_message("non-item in module")
@@ -718,6 +765,124 @@ pub fn parse_ty<'a>(
             span,
         }))
     }
+}
+
+pub fn parse_trait<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &'a Nodes<'a>,
+) -> Result<&'a Item<'a>, Diagnostic<usize>> {
+    let visibility = tok
+        .next_if(Token::Kw(Kw::Pub))
+        .ok()
+        .map(|_| Visibility::Pub)
+        .unwrap_or(Visibility::Priv);
+
+    tok.next_if(Token::Kw(Kw::Trait))
+        .map_err(|(found, sp)| diag_expected_found("trait", found, sp))?;
+
+    let (name, name_span) = tok
+        .next_if_ident()
+        .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
+
+    tok.next_if(Token::LBrace)
+        .map_err(|(tok, sp)| diag_expected_found("{", tok, sp))?;
+
+    let mut items = Vec::new();
+    while let Err(_) = tok.next_if(Token::RBrace) {
+        let peeked = match tok.peek_if(Token::Kw(Kw::Pub)) {
+            Ok(_) => tok.peek_second(),
+            Err(_) => tok.peek(),
+        }
+        .ok_or_else(|| Diagnostic::error().with_message("unexpected end of file"))?;
+
+        let item_node = match &peeked.0 {
+            Token::Kw(Kw::Type) => {
+                let sp = peeked.1;
+                let ty_def = parse_type_def(tok, nodes, None)?;
+                match ty_def {
+                    Item::TypeAlias(alias) => AssocItem::Type(alias),
+                    _ => {
+                        return Err(Diagnostic::error()
+                            .with_message("non-associated-item in trait definition")
+                            .with_labels(vec![Label::primary(0, sp)]))
+                    }
+                }
+            }
+            Token::Kw(Kw::Fn) => AssocItem::Fn(parse_fn(tok, nodes)?.unwrap_fn()),
+            _ => {
+                return Err(Diagnostic::error()
+                    .with_message("non-associated-item in trait definition")
+                    .with_labels(vec![Label::primary(0, peeked.1)]))
+            }
+        };
+        items.push(item_node);
+    }
+
+    Ok(nodes.push_trait(|id| Trait {
+        id,
+        span: name_span,
+        visibility,
+        ident: name,
+        assoc_items: nodes.arena.alloc_slice_fill_iter(items),
+    }))
+}
+
+pub fn parse_impl<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &'a Nodes<'a>,
+) -> Result<&'a Item<'a>, Diagnostic<usize>> {
+    let (_, span) = tok
+        .next_if(Token::Kw(Kw::Impl))
+        .map_err(|(found, span)| diag_expected_found("impl", found, span))?;
+
+    let of_trait = parse_path(tok, nodes)?;
+
+    tok.next_if(Token::Kw(Kw::For))
+        .map_err(|(found, span)| diag_expected_found("for", found, span))?;
+
+    let self_ty = parse_ty(tok, nodes)?;
+
+    tok.next_if(Token::LBrace)
+        .map_err(|(tok, sp)| diag_expected_found("{", tok, sp))?;
+
+    let mut items = Vec::new();
+    while let Err(_) = tok.next_if(Token::RBrace) {
+        let peeked = match tok.peek_if(Token::Kw(Kw::Pub)) {
+            Ok(_) => tok.peek_second(),
+            Err(_) => tok.peek(),
+        }
+        .ok_or_else(|| Diagnostic::error().with_message("unexpected end of file"))?;
+
+        let item_node = match &peeked.0 {
+            Token::Kw(Kw::Type) => {
+                let sp = peeked.1;
+                let ty_def = parse_type_def(tok, nodes, None)?;
+                match ty_def {
+                    Item::TypeAlias(alias) => AssocItem::Type(alias),
+                    _ => {
+                        return Err(Diagnostic::error()
+                            .with_message("non-associated-item in trait definition")
+                            .with_labels(vec![Label::primary(0, sp)]))
+                    }
+                }
+            }
+            Token::Kw(Kw::Fn) => AssocItem::Fn(parse_fn(tok, nodes)?.unwrap_fn()),
+            _ => {
+                return Err(Diagnostic::error()
+                    .with_message("non-associated-item in trait definition")
+                    .with_labels(vec![Label::primary(0, peeked.1)]))
+            }
+        };
+        items.push(item_node);
+    }
+
+    Ok(nodes.push_impl(|id| Impl {
+        id,
+        span,
+        of_trait,
+        self_ty,
+        assoc_items: nodes.arena.alloc_slice_fill_iter(items),
+    }))
 }
 
 #[cfg(test)]
@@ -853,8 +1018,8 @@ mod test {
         let valid_code = [
             "type Foo { field: Bar }",
             "type Foo {
-                | Bar{},
-                | Baz{},
+                | Bar {},
+                | Baz {},
             }",
             "type Foo {}",
             "type Foo {
@@ -882,7 +1047,7 @@ mod test {
             }",
             "pub type Foo {
                 | pub Bar {},
-                | pub baz {
+                | pub Baz {
                     pub field: type Blah {
                         | pub None {},
                         | pub Some { field: UwU },

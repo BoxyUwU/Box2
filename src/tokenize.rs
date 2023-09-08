@@ -54,6 +54,9 @@ pub enum Kw {
     Fn,
     Pub,
     Type,
+    Trait,
+    Impl,
+    For,
 }
 
 #[derive(Logos, Copy, Clone, Debug, PartialEq)]
@@ -81,6 +84,9 @@ pub enum Token<'a> {
     #[token("pub", |_| Kw::Pub)]
     #[token("type", |_| Kw::Type)]
     #[token("use", |_| Kw::Use)]
+    #[token("impl", |_| Kw::Impl)]
+    #[token("trait", |_| Kw::Trait)]
+    #[token("for", |_| Kw::For)]
     Kw(Kw),
 
     #[token("::")]
