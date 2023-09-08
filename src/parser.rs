@@ -900,6 +900,40 @@ mod test {
     }
 
     #[test]
+    fn trait_and_impls() {
+        let nodes = Nodes::new();
+        let valid_code = [
+            "impl Trait for u32 { }",
+            "impl Trait for u32 { 
+                pub fn bar();
+                type X;
+            }",
+            "impl Trait for u32 {
+                pub fn bar() -> u64 {
+                    1 + 1
+                }
+
+                pub fn baz() -> u128;
+            }",
+            "pub trait Trait {}",
+            "trait Trait {
+                pub fn bar();
+                type X;
+            }",
+            "trait Trait {
+                pub fn bar() -> u64 {
+                    1 + 1
+                }
+
+                pub fn baz() -> u128;
+            }",
+        ];
+        for code in valid_code {
+            parse_crate(&mut Tokenizer::new(code), &nodes).unwrap();
+        }
+    }
+
+    #[test]
     fn crate_root_valid() {
         let nodes = Nodes::new();
         let valid_code = [

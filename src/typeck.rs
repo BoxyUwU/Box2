@@ -28,7 +28,8 @@ pub fn visit_items<'ast>(
                 visit_items(item, ast, resolutions, f);
             }
         }
-        Item::TypeDef(_) | Item::VariantDef(_) | Item::FieldDef(_) => return, /* FIXME: field tys are exprs */
+        // FIXME: check field defs
+        Item::TypeDef(_) | Item::VariantDef(_) | Item::FieldDef(_) => return,
         Item::Use(_) => return,
         // FIXME: actually typeck this stuff
         Item::TypeAlias(_) => (),
