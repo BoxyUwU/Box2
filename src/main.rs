@@ -1,9 +1,11 @@
 #![feature(type_alias_impl_trait)]
 #![feature(map_try_insert)]
 
+use std::collections::HashMap;
+
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 
-use crate::typeck::TypeckError;
+use crate::{ast::visit, typeck::TypeckError};
 
 macro_rules! unwrap_matches {
     ($e:expr, $p:pat) => {
@@ -55,47 +57,31 @@ fn main() {
         codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
     }
 
-    typeck::visit_items(
-        &ast::Item::Mod(*root_mod),
-        &nodes,
-        &resolver.resolutions,
-        &mut |item| match item {
-            ast::Item::Fn(func) => {
-                let (_, errors) = typeck::typeck_fn(func, &nodes, &resolver.resolutions);
-                for e in errors {
-                    match e {
-                        TypeckError::ExpectedFound(typeck::ExpectedFound(a, b, span)) => {
-                            let diag = Diagnostic::error()
-                                .with_message(format!(
-                                    "mismatched types: a:{} b:{}",
-                                    a.pretty(&nodes),
-                                    b.pretty(&nodes),
-                                ))
-                                .with_labels(vec![Label::primary(0, span)]);
-                            codespan_reporting::term::emit(
-                                &mut writer.lock(),
-                                &config,
-                                &files,
-                                &diag,
-                            )
-                            .unwrap();
-                        }
-                        TypeckError::UnconstrainedInfer(_, _, span) => {
-                            let diag = Diagnostic::error()
-                                .with_message(format!("could not infer type"))
-                                .with_labels(vec![Label::primary(0, span)]);
-                            codespan_reporting::term::emit(
-                                &mut writer.lock(),
-                                &config,
-                                &files,
-                                &diag,
-                            )
-                            .unwrap();
-                        }
-                    }
-                }
+    let mut checker = typeck::FnChecker {
+        ast: &nodes,
+        resolutions: &resolver.resolutions,
+        typeck_results: HashMap::new(),
+    };
+    visit::super_visit_mod(&mut checker, root_mod);
+
+    for e in checker.typeck_results.into_iter().flat_map(|(_, r)| r.errs) {
+        match e {
+            TypeckError::ExpectedFound(typeck::ExpectedFound(a, b, span)) => {
+                let diag = Diagnostic::error()
+                    .with_message(format!(
+                        "mismatched types: a:{} b:{}",
+                        a.pretty(&nodes),
+                        b.pretty(&nodes),
+                    ))
+                    .with_labels(vec![Label::primary(0, span)]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
             }
-            _ => {}
-        },
-    );
+            TypeckError::UnconstrainedInfer(_, _, span) => {
+                let diag = Diagnostic::error()
+                    .with_message(format!("could not infer type"))
+                    .with_labels(vec![Label::primary(0, span)]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+            }
+        }
+    }
 }

@@ -343,6 +343,7 @@ pub fn parse_block_expr<'a>(
             let (_, end_span) = tok
                 .next_if(Token::RBrace)
                 .map_err(|(found, span)| diag_expected_found("} or ;", found, span))?;
+            stmts.push((expr, terminator));
             break end_span;
         }
 
@@ -404,7 +405,7 @@ pub fn parse_fn<'a>(
         Ok(_) => None,
         Err(_) => Some(parse_block_expr(tok, nodes)?),
     };
-    Ok(nodes.push_fn(|id: NodeId| Fn {
+    Ok(nodes.push_fn(|id| Fn {
         id,
         visibility,
         name,

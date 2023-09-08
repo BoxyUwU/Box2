@@ -2,6 +2,8 @@ use crate::tokenize::{Literal, Span};
 use bumpalo::Bump;
 use std::{cell::RefCell, collections::HashMap};
 
+pub mod visit;
+
 #[derive(Default)]
 pub struct Nodes<'a> {
     pub arena: Bump,

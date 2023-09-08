@@ -14,29 +14,33 @@ fn ast_ty_to_ty(ty: &crate::ast::Ty, resolutions: &HashMap<NodeId, Res<NodeId>>)
     Ty::Adt(id)
 }
 
-pub fn visit_items<'ast>(
-    item: &Item<'ast>,
-    ast: &'ast Nodes<'ast>,
-    resolutions: &HashMap<NodeId, Res<NodeId>>,
-    f: &mut dyn FnMut(&'_ Item<'ast>),
-) {
-    f(item);
-    match item {
-        Item::Fn(_) => return, /* FIXME `fn foo() { fn bar() { ... }} */
-        Item::Mod(Module { items, .. }) => {
-            for item in *items {
-                visit_items(item, ast, resolutions, f);
-            }
-        }
-        // FIXME: check field defs
-        Item::TypeDef(_) | Item::VariantDef(_) | Item::FieldDef(_) => return,
-        Item::Use(_) => return,
-        // FIXME: actually typeck this stuff
-        Item::TypeAlias(_) => (),
-        Item::Trait(_) => (),
-        Item::Impl(_) => (),
+pub struct TypeckResults {
+    pub tys: HashMap<NodeId, Ty>,
+    pub errs: Vec<TypeckError>,
+}
+
+pub struct FnChecker<'ast, 'res> {
+    pub ast: &'ast Nodes<'ast>,
+    pub resolutions: &'res HashMap<NodeId, Res<NodeId>>,
+
+    pub typeck_results: HashMap<NodeId, TypeckResults>,
+}
+
+impl<'ast, 'res> visit::Visitor for FnChecker<'ast, 'res> {
+    fn visit_fn(&mut self, f: &Fn<'_>) {
+        visit::super_visit_fn(self, f);
+
+        let r = typeck_fn(f, self.ast, self.resolutions);
+        self.typeck_results.insert(
+            f.id,
+            TypeckResults {
+                tys: r.0,
+                errs: r.1,
+            },
+        );
     }
 }
+
 pub enum TypeckError {
     ExpectedFound(ExpectedFound),
     UnconstrainedInfer(NodeId, InferId, Span),
@@ -47,17 +51,18 @@ pub fn typeck_fn<'ast>(
         ret_ty,
         body,
         ..
-    }: &'_ Fn<'ast>,
+    }: &'_ Fn<'_>,
     ast: &'ast Nodes<'ast>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
 ) -> (HashMap<NodeId, Ty>, Vec<TypeckError>) {
-    let body = match body {
-        Some(body) => body,
-        None => todo!(),
-    };
-
     // FIXME: param tys wf
     // FIXME: ret tys wf
+
+    let body = match body {
+        Some(body) => body,
+        None => return (HashMap::new(), vec![]),
+    };
+
     let mut infer_ctx = InferCtxt::new();
     let mut node_tys = HashMap::from_iter(params.iter().map(|param| {
         let var = infer_ctx.new_var(param.span);
@@ -200,7 +205,7 @@ impl InferCtxt {
 }
 
 pub fn typeck_expr<'ast>(
-    this_expr: &Expr<'ast>,
+    this_expr: &Expr<'_>,
     ast: &'ast Nodes<'ast>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
     infer_ctx: &mut InferCtxt,
