@@ -392,11 +392,45 @@ pub fn parse_block_expr<'a>(
     )))
 }
 
+pub fn parse_opt_generic_params<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &'a Nodes<'a>,
+) -> Result<Generics<'a>, Diagnostic<usize>> {
+    let mut params = vec![];
+    if let Ok(_) = tok.next_if(Token::LSquare) {
+        while let Err(_) = tok.next_if(Token::RSquare) {
+            let (ident, span) = tok
+                .next_if_ident()
+                .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
+            let gen_param = nodes.push_generic_param(|id| GenericParam {
+                id,
+                name: ident,
+                name_span: span,
+                kind: GenericParamKind::Type,
+            });
+            params.push(gen_param);
+
+            let ate_comma = tok.next_if(Token::Comma);
+            if ate_comma.is_err() && tok.peek_if(Token::RSquare).is_err() {
+                let (found, span) = tok
+                    .peek()
+                    .map(|(found, span)| (*found, *span))
+                    .unwrap_or((Token::Error, Span::new(0..0)));
+                return Err(diag_expected_found("`,` or `]`", found, span));
+            }
+        }
+    }
+
+    Ok(Generics {
+        params: nodes.arena.alloc_slice_fill_iter(params),
+    })
+}
+
 pub fn parse_fn<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
 ) -> Result<&'a Item<'a>, Diagnostic<usize>> {
-    // (pub)? fn ( (ident: ty),* ) (-> ty)? ({ expr } OR ;)
+    // (pub)? fn ident ([(ident),*])? ( (ident: ty),* ) (-> ty)? ({ expr } OR ;)
 
     let visibility = tok
         .next_if(Token::Kw(Kw::Pub))
@@ -409,6 +443,8 @@ pub fn parse_fn<'a>(
         .next_if_ident()
         .map_err(|(found, span)| diag_expected_found("IDENTIFER", found, span))?
         .0;
+
+    let generics = parse_opt_generic_params(tok, nodes)?;
 
     tok.next_if(Token::LParen)
         .map_err(|(found, span)| diag_expected_found("(", found, span))?;
@@ -447,6 +483,7 @@ pub fn parse_fn<'a>(
         name,
         params: nodes.arena.alloc_slice_fill_iter(params),
         ret_ty,
+        generics,
         body,
     }))
 }
@@ -466,6 +503,9 @@ pub fn parse_type_def<'a>(
         .map_err(|(found, span)| diag_expected_found("type", found, span))?;
 
     let mut name = tok.next_if_ident().ok();
+
+    let generics = parse_opt_generic_params(tok, nodes)?;
+
     // type def is only permitted to not have a name if it is
     // the rhs of a field i.e. `field: type { ... }`
     if let None = name {
@@ -498,6 +538,7 @@ pub fn parse_type_def<'a>(
             visibility,
             name,
             name_span,
+            generics,
             ty: None,
         }));
     }
@@ -518,6 +559,7 @@ pub fn parse_type_def<'a>(
             visibility,
             name,
             name_span,
+            generics,
             ty: Some(ty),
         }));
     }
@@ -588,6 +630,7 @@ pub fn parse_type_def<'a>(
         visibility,
         name,
         name_span,
+        generics,
         variants: nodes.arena.alloc_slice_fill_iter(variants),
     });
     Ok(item)
@@ -811,6 +854,8 @@ pub fn parse_trait<'a>(
         .next_if_ident()
         .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
 
+    let generics = parse_opt_generic_params(tok, nodes)?;
+
     tok.next_if(Token::LBrace)
         .map_err(|(tok, sp)| diag_expected_found("{", tok, sp))?;
 
@@ -850,6 +895,7 @@ pub fn parse_trait<'a>(
         span: name_span,
         visibility,
         ident: name,
+        generics,
         assoc_items: nodes.arena.alloc_slice_fill_iter(items),
     }))
 }
@@ -861,6 +907,8 @@ pub fn parse_impl<'a>(
     let (_, span) = tok
         .next_if(Token::Kw(Kw::Impl))
         .map_err(|(found, span)| diag_expected_found("impl", found, span))?;
+
+    let generics = parse_opt_generic_params(tok, nodes)?;
 
     let of_trait = parse_path(tok, nodes)?;
 
@@ -908,6 +956,7 @@ pub fn parse_impl<'a>(
         span,
         of_trait,
         self_ty,
+        generics,
         assoc_items: nodes.arena.alloc_slice_fill_iter(items),
     }))
 }

@@ -13,6 +13,7 @@ pub enum DefKind {
     Field,
     Trait,
     TypeAlias,
+    GenericParam,
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Res<Id> {
@@ -32,6 +33,17 @@ pub struct Resolver<'ast> {
 #[derive(Debug)]
 struct Rib {
     bindings: HashMap<String, NodeId>,
+}
+impl Rib {
+    fn from_generics(generics: &Generics<'_>) -> Rib {
+        Rib {
+            bindings: generics
+                .params
+                .iter()
+                .map(|param| (param.name.to_owned(), param.id))
+                .collect(),
+        }
+    }
 }
 
 impl<'ast> Resolver<'ast> {
@@ -112,14 +124,17 @@ impl<'ast> Resolver<'ast> {
             span: _,
             of_trait,
             self_ty,
+            generics,
             assoc_items,
         } = impl_;
 
-        let _ = self.resolve_path(None, *id, of_trait);
-        self.resolve_ty(self_ty);
-        for assoc_item in *assoc_items {
-            self.resolve_associated_item(assoc_item);
-        }
+        self.with_rib(Rib::from_generics(&generics), |this| {
+            let _ = this.resolve_path(None, *id, of_trait);
+            this.resolve_ty(self_ty);
+            for assoc_item in *assoc_items {
+                this.resolve_associated_item(assoc_item);
+            }
+        });
     }
 
     fn resolve_trait(&mut self, trait_: &Trait<'_>) {
@@ -128,11 +143,14 @@ impl<'ast> Resolver<'ast> {
             span: _,
             visibility: _,
             ident: _,
+            generics,
             assoc_items,
         } = trait_;
-        for assoc_item in *assoc_items {
-            self.resolve_associated_item(assoc_item);
-        }
+        self.with_rib(Rib::from_generics(generics), |this| {
+            for assoc_item in *assoc_items {
+                this.resolve_associated_item(assoc_item);
+            }
+        });
     }
 
     fn resolve_associated_item(&mut self, assoc_item: &AssocItem<'_>) {
@@ -146,17 +164,12 @@ impl<'ast> Resolver<'ast> {
     }
 
     fn resolve_type_def(&mut self, ty_def: &TypeDef) {
-        self.with_rib(
-            Rib {
-                bindings: HashMap::new(),
-            },
-            |this| {
-                ty_def
-                    .variants
-                    .iter()
-                    .for_each(|variant| this.resolve_variant_def(variant))
-            },
-        );
+        self.with_rib(Rib::from_generics(&ty_def.generics), |this| {
+            ty_def
+                .variants
+                .iter()
+                .for_each(|variant| this.resolve_variant_def(variant))
+        });
     }
 
     fn resolve_variant_def(&mut self, node: &VariantDef) {
@@ -182,26 +195,28 @@ impl<'ast> Resolver<'ast> {
     }
 
     fn resolve_fn(&mut self, func: &Fn) {
-        for param in func.params {
-            self.resolve_ty(param.ty.unwrap());
-        }
-        if let Some(ret) = func.ret_ty {
-            self.resolve_ty(ret);
-        }
+        self.with_rib(Rib::from_generics(&func.generics), |this| {
+            for param in func.params {
+                this.resolve_ty(param.ty.unwrap());
+            }
+            if let Some(ret) = func.ret_ty {
+                this.resolve_ty(ret);
+            }
 
-        use std::iter::FromIterator;
-        if let Some(body) = func.body {
-            self.with_rib(
-                Rib {
-                    bindings: HashMap::from_iter(
-                        func.params
-                            .iter()
-                            .map(|param| (param.ident.to_string(), param.id)),
-                    ),
-                },
-                |this| this.resolve_expr(body),
-            );
-        }
+            use std::iter::FromIterator;
+            if let Some(body) = func.body {
+                this.with_rib(
+                    Rib {
+                        bindings: HashMap::from_iter(
+                            func.params
+                                .iter()
+                                .map(|param| (param.ident.to_string(), param.id)),
+                        ),
+                    },
+                    |this| this.resolve_expr(body),
+                );
+            }
+        })
     }
 
     fn resolve_expr(&mut self, expr: &Expr) {
@@ -251,7 +266,8 @@ impl<'ast> Resolver<'ast> {
                                 | DefKind::TypeAlias
                                 | DefKind::Field
                                 | DefKind::Func
-                                | DefKind::Mod,
+                                | DefKind::Mod
+                                | DefKind::GenericParam,
                                 _,
                             )
                             | Res::Local(_) => unreachable!(),
@@ -430,6 +446,7 @@ impl<'ast> Resolver<'ast> {
                     id: _,
                     kind: ExprKind::Let(_, _, _),
                 }) => Res::Local(id),
+                Node::GenericParam(param) => Res::Def(DefKind::GenericParam, param.id),
                 Node::Expr(_) | Node::Ty(_) => unreachable!(),
             };
             self.resolutions.insert(path_id, res);

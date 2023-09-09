@@ -98,6 +98,14 @@ impl<'a> Nodes<'a> {
             .unwrap_item()
     }
 
+    pub fn push_generic_param(
+        &'a self,
+        f: impl FnOnce(NodeId) -> GenericParam<'a>,
+    ) -> &GenericParam {
+        self.push_node(|id| Node::GenericParam(f(id)))
+            .unwrap_generic_param()
+    }
+
     pub fn get_variants_adt(&'a self, variant: NodeId) -> &'a TypeDef {
         let parent = self.variant_parent.borrow()[&variant];
         self.get(parent).unwrap_type_def()
@@ -113,6 +121,7 @@ pub enum Node<'a> {
     Item(Item<'a>),
     Ty(Ty<'a>),
     Param(Param<'a>),
+    GenericParam(GenericParam<'a>),
 }
 
 impl<'a> Node<'a> {
@@ -172,6 +181,10 @@ impl<'a> Node<'a> {
 
     pub fn unwrap_param(&self) -> &Param {
         unwrap_matches!(self, Node::Param(p) => p)
+    }
+
+    pub fn unwrap_generic_param(&self) -> &GenericParam {
+        unwrap_matches!(self, Node::GenericParam(p) => p)
     }
 }
 
@@ -296,11 +309,30 @@ pub struct Module<'a> {
 }
 
 #[derive(Copy, Clone, Debug)]
+pub struct Generics<'a> {
+    pub params: &'a [&'a GenericParam<'a>],
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct GenericParam<'a> {
+    pub id: NodeId,
+    pub name: &'a str,
+    pub name_span: Span,
+    pub kind: GenericParamKind,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum GenericParamKind {
+    Type,
+}
+
+#[derive(Copy, Clone, Debug)]
 pub struct TypeAlias<'a> {
     pub id: NodeId,
     pub visibility: Visibility,
     pub name: &'a str,
     pub name_span: Span,
+    pub generics: Generics<'a>,
     pub ty: Option<&'a Ty<'a>>,
 }
 
@@ -310,6 +342,7 @@ pub struct TypeDef<'a> {
     pub visibility: Visibility,
     pub name: &'a str,
     pub name_span: Span,
+    pub generics: Generics<'a>,
     pub variants: &'a [&'a VariantDef<'a>],
 }
 
@@ -345,6 +378,7 @@ pub struct Fn<'a> {
     pub name: &'a str,
     pub params: &'a [&'a Param<'a>],
     pub ret_ty: Option<&'a Ty<'a>>,
+    pub generics: Generics<'a>,
     pub body: Option<&'a Expr<'a>>,
 }
 
@@ -363,6 +397,7 @@ pub struct Trait<'a> {
 
     pub visibility: Visibility,
     pub ident: &'a str,
+    pub generics: Generics<'a>,
     pub assoc_items: &'a [AssocItem<'a>],
 }
 
@@ -379,6 +414,8 @@ pub struct Impl<'a> {
 
     pub of_trait: Path<'a>,
     pub self_ty: &'a Ty<'a>,
+
+    pub generics: Generics<'a>,
 
     pub assoc_items: &'a [AssocItem<'a>],
 }
