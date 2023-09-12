@@ -1,18 +1,15 @@
-use std::{collections::HashMap, iter::FromIterator};
+use std::{cell::RefCell, collections::HashMap, iter::FromIterator};
+
+use bumpalo::Bump;
+use codespan_reporting::diagnostic::{Diagnostic, Label};
 
 use crate::{
-    ast::*,
+    ast::{self, NodeId},
+    // ast::*,
     resolve::{DefKind, Res},
+    tir::*,
     tokenize::{Literal, Span},
 };
-
-fn ast_ty_to_ty(ty: &crate::ast::Ty, resolutions: &HashMap<NodeId, Res<NodeId>>) -> Ty {
-    let id = match resolutions[&ty.id] {
-        Res::Def(DefKind::Adt, id) => id,
-        Res::Def(_, _) | Res::Local(_) => unreachable!(),
-    };
-    Ty::Adt(id)
-}
 
 pub struct TypeckResults {
     pub tys: HashMap<NodeId, Ty>,
@@ -109,29 +106,32 @@ pub fn typeck_fn<'ast>(
         )
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub enum Ty {
-    Unit,
-    Infer(InferId),
-    Adt(NodeId),
-    Int,
-    Float,
-}
-
-impl Ty {
+impl Ty<'_> {
     pub fn pretty<'ast>(self, nodes: &'ast Nodes<'ast>) -> String {
         match self {
             Ty::Unit => "()".into(),
-            Ty::Infer(_) => "_".into(),
-            Ty::Adt(id) => nodes.get(id).unwrap_type_def().name.into(),
+            Ty::Infer(inf) => format!("?{}", inf.0),
+            Ty::Adt(id, args) => {
+                let mut pretty_args = String::new();
+                for arg in args.0 {
+                    if !pretty_args.is_empty() {
+                        pretty_args.push_str(", ");
+                    }
+
+                    match arg {
+                        GenArg::Ty(ty) => pretty_args.push_str(&ty.pretty(nodes)),
+                    }
+                }
+                format!("{}[{}]", nodes.get(id).unwrap_type_def().name, pretty_args)
+            }
+            Ty::Bound(db, bv) => format!("^{}_{}", db.0, bv.0),
+            Ty::Placeholder(u, bv) => format!("!{}_{}", u.0, bv.0),
             Ty::Int => "int".into(),
             Ty::Float => "float".into(),
+            Ty::Error => "{ type error }".into(),
         }
     }
 }
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct InferId(usize);
 
 #[derive(Debug)]
 pub struct ExpectedFound(pub Ty, pub Ty, pub Span);
