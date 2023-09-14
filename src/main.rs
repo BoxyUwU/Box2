@@ -28,7 +28,7 @@ mod parser;
 mod resolve;
 mod tir;
 mod tokenize;
-// mod typeck;
+mod typeck;
 
 fn main() {
     use ast::Nodes;
@@ -60,7 +60,8 @@ fn main() {
     }
 
     let tir_ctx = tir::TirCtx::new();
-    let tir = tir::building::build(&nodes, root_mod.id, &resolver.resolutions, &tir_ctx);
+    let (tir, body_sources) =
+        tir::building::build(&nodes, root_mod.id, &resolver.resolutions, &tir_ctx);
 
     // let mut checker = typeck::FnChecker {
     //     ast: &nodes,

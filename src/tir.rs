@@ -4,11 +4,13 @@ use bumpalo::Bump;
 use codespan_reporting::diagnostic::Diagnostic;
 
 use crate::{
+    ast,
     resolve::Res,
     tokenize::{Literal, Span},
 };
 
 pub mod building;
+pub mod visit;
 
 pub struct TirCtx<'t> {
     arena: Bump,
@@ -28,28 +30,39 @@ impl<'t> TirCtx<'t> {
     pub fn err(&self, err: Diagnostic<usize>) {
         self.errors.borrow_mut().push(err);
     }
+
+    pub fn get_item(&self, id: TirId) -> &'t Item<'t> {
+        self.items.borrow().get(&id).unwrap()
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct BodyId(usize);
+#[derive(Copy, Clone, Debug)]
+pub struct BodySource<'t> {
+    pub params: &'t [(ast::NodeId, &'t Ty<'t>)],
+    pub ret: &'t Ty<'t>,
+    pub expr: ast::NodeId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct TirId(usize);
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct BodyId(usize);
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct GenArgs<'t>(&'t [GenArg<'t>]);
+pub struct GenArgs<'t>(pub &'t [GenArg<'t>]);
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum GenArg<'t> {
     Ty(&'t Ty<'t>),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct BoundVar(u32);
+pub struct BoundVar(pub u32);
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Universe(u32);
+pub struct Universe(pub u32);
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct DebruijnIndex(u32);
+pub struct DebruijnIndex(pub u32);
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct InferId(usize);
+pub struct InferId(pub usize);
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Ty<'t> {
@@ -70,6 +83,7 @@ pub struct Generics<'t> {
     pub parent_count: u32,
     pub parent: Option<TirId>,
     pub params: &'t [GenParam<'t>],
+    pub param_id_to_var: &'t HashMap<TirId, u32>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -106,6 +120,7 @@ pub struct Expr<'a> {
 #[derive(Copy, Clone, Debug)]
 pub struct Param<'t> {
     pub ty: &'t Ty<'t>,
+    pub span: Span,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -166,6 +181,14 @@ pub enum Item<'t> {
     Trait(Trait<'t>),
     Impl(Impl<'t>),
 }
+impl<'t> Item<'t> {
+    pub fn unwrap_adt(&self) -> &Adt<'t> {
+        match self {
+            Item::Adt(adt) => adt,
+            _ => panic!("item was not an adt: {:?}", self),
+        }
+    }
+}
 
 #[derive(Debug, Copy, Clone)]
 pub struct Fn<'t> {
@@ -173,7 +196,7 @@ pub struct Fn<'t> {
     pub params: &'t [Param<'t>],
     pub ret_ty: &'t Ty<'t>,
     pub generics: &'t Generics<'t>,
-    pub body: BodyId,
+    pub body: Option<BodyId>,
 }
 
 #[derive(Debug, Copy, Clone)]
