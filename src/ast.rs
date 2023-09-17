@@ -106,6 +106,10 @@ impl<'a> Nodes<'a> {
             .unwrap_generic_param()
     }
 
+    pub fn push_path_seg(&'a self, f: impl FnOnce(NodeId) -> PathSeg<'a>) -> &PathSeg<'a> {
+        self.push_node(|id| Node::PathSeg(f(id))).unwrap_path_seg()
+    }
+
     pub fn get_variants_adt(&'a self, variant: NodeId) -> &'a TypeDef {
         let parent = self.variant_parent.borrow()[&variant];
         self.get(parent).unwrap_type_def()
@@ -122,6 +126,7 @@ pub enum Node<'a> {
     Ty(Ty<'a>),
     Param(Param<'a>),
     GenericParam(GenericParam<'a>),
+    PathSeg(PathSeg<'a>),
 }
 
 impl<'a> Node<'a> {
@@ -186,6 +191,10 @@ impl<'a> Node<'a> {
     pub fn unwrap_generic_param(&self) -> &GenericParam {
         unwrap_matches!(self, Node::GenericParam(p) => p)
     }
+
+    pub fn unwrap_path_seg(&self) -> &PathSeg {
+        unwrap_matches!(self, Node::PathSeg(p) => p)
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -209,8 +218,16 @@ pub enum GenArg<'a> {
 pub struct GenArgs<'a>(pub &'a [GenArg<'a>]);
 
 #[derive(Debug, Copy, Clone, PartialEq)]
+pub struct PathSeg<'a> {
+    pub id: NodeId,
+    pub ident: &'a str,
+    pub args: GenArgs<'a>,
+    pub span: Span,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Path<'a> {
-    pub segments: &'a [(&'a str, GenArgs<'a>, Span)],
+    pub segments: &'a [&'a PathSeg<'a>],
     pub span: Span,
 }
 
@@ -472,7 +489,7 @@ pub struct FieldInit<'a> {
 
 #[derive(Debug, Copy, Clone)]
 pub struct TypeInit<'a> {
-    pub path: &'a Expr<'a>,
+    pub path: Path<'a>,
     pub field_inits: &'a [&'a FieldInit<'a>],
     pub span: Span,
 }

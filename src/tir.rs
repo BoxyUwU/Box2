@@ -34,6 +34,10 @@ impl<'t> TirCtx<'t> {
     pub fn get_item(&self, id: TirId) -> &'t Item<'t> {
         self.items.borrow().get(&id).unwrap()
     }
+
+    pub fn take_errs(&self) -> Vec<Diagnostic<usize>> {
+        std::mem::take(&mut *self.errors.borrow_mut())
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]

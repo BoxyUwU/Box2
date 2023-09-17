@@ -21,6 +21,41 @@ pub enum Res<Id> {
     Local(Id),
 }
 
+impl Res<NodeId> {
+    pub fn from_id<'a>(id: NodeId, nodes: &'a Nodes<'a>) -> Res<NodeId> {
+        match nodes.get(id) {
+            Node::Item(i) => Res::Def(
+                match i {
+                    Item::Mod(_) => DefKind::Mod,
+                    Item::TypeDef(_) => DefKind::Adt,
+                    Item::VariantDef(_) => DefKind::Variant,
+                    Item::Fn(_) => DefKind::Func,
+                    Item::Use(_) | Item::FieldDef(_) => unreachable!(),
+                    Item::Impl(_) => unreachable!(),
+                    Item::TypeAlias(_) => DefKind::TypeAlias,
+                    Item::Trait(_) => DefKind::Trait,
+                },
+                id,
+            ),
+            Node::Param(_) => Res::Local(id),
+            Node::Expr(Expr {
+                id: _,
+                kind: ExprKind::Let(_, _, _),
+            }) => Res::Local(id),
+            Node::GenericParam(param) => Res::Def(DefKind::GenericParam, param.id),
+            Node::PathSeg(_) | Node::Expr(_) | Node::Ty(_) => unreachable!(),
+        }
+    }
+}
+impl<Id> Res<Id> {
+    pub fn map_id<NewId>(self, f: impl FnOnce(Id) -> NewId) -> Res<NewId> {
+        match self {
+            Res::Def(d, id) => Res::Def(d, f(id)),
+            Res::Local(id) => Res::Local(f(id)),
+        }
+    }
+}
+
 pub struct Resolver<'ast> {
     nodes: &'ast Nodes<'ast>,
     pub resolutions: HashMap<NodeId, Res<NodeId>>,
@@ -251,12 +286,12 @@ impl<'ast> Resolver<'ast> {
             ExprKind::Path(path) => drop(self.resolve_path(None, expr.id, &path)),
             ExprKind::TypeInit(ty_init) => {
                 let path = ty_init.path;
-                self.resolve_expr(path);
+                let _ = self.resolve_path(None, expr.id, &path);
 
                 for field_init in ty_init.field_inits {
                     self.resolve_expr(field_init.expr);
 
-                    if let Some(&res) = self.resolutions.get(&path.id) {
+                    if let Some(&res) = self.resolutions.get(&expr.id) {
                         let id = match res {
                             Res::Def(DefKind::Variant, id) => id,
                             Res::Def(DefKind::Adt, id) => id,
@@ -304,9 +339,7 @@ impl<'ast> Resolver<'ast> {
                                     _ => "type init expr not on a type",
                                 };
 
-                                let path =
-                                    unwrap_matches!(&path.kind, ExprKind::Path(path) => path);
-                                let path_span = path.segments.last().unwrap().2;
+                                let path_span = path.segments.last().unwrap().span;
                                 self.errors.push(
                                     Diagnostic::error()
                                         .with_message(message)
@@ -344,16 +377,16 @@ impl<'ast> Resolver<'ast> {
                     start_use_item.name
                 ))
                 .with_labels(vec![
-                    Label::primary(0, start_use_item.path.segments.last().unwrap().2)
+                    Label::primary(0, start_use_item.path.segments.last().unwrap().span)
                         .with_message("use item"),
-                    Label::secondary(0, cyclic_use_item.path.segments.last().unwrap().2)
+                    Label::secondary(0, cyclic_use_item.path.segments.last().unwrap().span)
                         .with_message("which requires resolving this cyclic use item"),
                 ]);
             self.errors.push(cycle_diagnostic);
             return Err(());
         }
 
-        for args in path.segments.iter().map(|segment| segment.1) {
+        for args in path.segments.iter().map(|segment| segment.args) {
             // FIXME: not super correct wrt `resolve_in_item` maybe just remove that
             self.resolve_gen_args(args)?;
         }
@@ -365,10 +398,18 @@ impl<'ast> Resolver<'ast> {
                 .ribs
                 .iter()
                 .rev()
-                .find_map(|rib| rib.bindings.get(first_seg.0).copied())
+                .find_map(|rib| rib.bindings.get(first_seg.ident).copied())
             {
-                Some(id) => id,
-                None => return Err(self.errors.push(diag_unresolved(first_seg.0, first_seg.2))),
+                Some(id) => {
+                    self.resolutions
+                        .insert(first_seg.id, Res::from_id(id, self.nodes));
+                    id
+                }
+                None => {
+                    return Err(self
+                        .errors
+                        .push(diag_unresolved(first_seg.ident, first_seg.span)))
+                }
             },
         };
 
@@ -376,80 +417,77 @@ impl<'ast> Resolver<'ast> {
             .segments
             .iter()
             .skip(resolve_in_item.is_none() as usize)
-            .try_fold(first_seg, |prev_segment, (segment, _, span)| {
-                match self.nodes.get(prev_segment).unwrap_item() {
-                    Item::Mod(module) => module
-                        .items
-                        .iter()
-                        .map(|item| (item.name().unwrap(), item.id()))
-                        .find(|(name, _)| segment == name),
-                    Item::VariantDef(def)
-                    | &Item::TypeDef(TypeDef {
-                        variants: &[def @ VariantDef { name: None, .. }],
-                        ..
-                    }) => def
-                        .type_defs
-                        .iter()
-                        .map(|ty_def| (ty_def.name, ty_def.id))
-                        .find(|(name, _)| segment == name),
-                    Item::TypeDef(ty_def) => ty_def
-                        .variants
-                        .iter()
-                        .map(|variant| (variant.name.unwrap(), variant.id))
-                        .find(|(name, _)| segment == name),
-                    Item::Fn(..) => None,
-                    // we replace prev_segment == Item::Use before continuing to next iterations
-                    // and we dont insert resolutions to use items in ribs.
-                    // we cannot resolve to field defs
-                    Item::Use(..) | Item::FieldDef(..) => unreachable!(),
-                    Item::Impl(_) => unreachable!(),
-                    Item::TypeAlias(_) => None,
-                    Item::Trait(trait_) => trait_
-                        .assoc_items
-                        .iter()
-                        .map(|assoc_item| match assoc_item {
-                            AssocItem::Fn(f) => (f.name, f.id),
-                            AssocItem::Type(t) => (t.name, t.id),
-                        })
-                        .find(|(name, _)| segment == name),
-                }
-                .map(|(_, id)| id)
-                .ok_or_else(|| self.errors.push(diag_unresolved(segment, *span)))
-                .and_then(|id| match self.nodes.get(id) {
-                    Node::Item(Item::Use(u)) => {
-                        self.use_item_stack.push(path_id);
-                        let resolved = self.resolve_path(Some(prev_segment), u.id, &u.path);
-                        assert_eq!(self.use_item_stack.pop().unwrap(), path_id);
-                        resolved
+            .try_fold(
+                first_seg,
+                |prev_segment,
+                 PathSeg {
+                     ident: segment,
+                     span,
+                     id: seg_id,
+                     ..
+                 }| {
+                    let opt_res = match self.nodes.get(prev_segment).unwrap_item() {
+                        Item::Mod(module) => module
+                            .items
+                            .iter()
+                            .map(|item| (item.name().unwrap(), item.id()))
+                            .find(|(name, _)| segment == name),
+                        Item::VariantDef(def)
+                        | &Item::TypeDef(TypeDef {
+                            variants: &[def @ VariantDef { name: None, .. }],
+                            ..
+                        }) => def
+                            .type_defs
+                            .iter()
+                            .map(|ty_def| (ty_def.name, ty_def.id))
+                            .find(|(name, _)| segment == name),
+                        Item::TypeDef(ty_def) => ty_def
+                            .variants
+                            .iter()
+                            .map(|variant| (variant.name.unwrap(), variant.id))
+                            .find(|(name, _)| segment == name),
+                        Item::Fn(..) => None,
+                        // we replace prev_segment == Item::Use before continuing to next iterations
+                        // and we dont insert resolutions to use items in ribs.
+                        // we cannot resolve to field defs
+                        Item::Use(..) | Item::FieldDef(..) => unreachable!(),
+                        Item::Impl(_) => unreachable!(),
+                        Item::TypeAlias(_) => None,
+                        Item::Trait(trait_) => trait_
+                            .assoc_items
+                            .iter()
+                            .map(|assoc_item| match assoc_item {
+                                AssocItem::Fn(f) => (f.name, f.id),
+                                AssocItem::Type(t) => (t.name, t.id),
+                            })
+                            .find(|(name, _)| segment == name),
+                    };
+
+                    let opt_res = opt_res
+                        .map(|(_, id)| id)
+                        .ok_or_else(|| self.errors.push(diag_unresolved(segment, *span)))
+                        .and_then(|id| match self.nodes.get(id) {
+                            Node::Item(Item::Use(u)) => {
+                                self.use_item_stack.push(path_id);
+                                let resolved = self.resolve_path(Some(prev_segment), u.id, &u.path);
+                                assert_eq!(self.use_item_stack.pop().unwrap(), path_id);
+                                resolved
+                            }
+                            _ => Ok(id),
+                        });
+
+                    if let Ok(id) = opt_res {
+                        self.resolutions
+                            .insert(*seg_id, Res::from_id(id, self.nodes));
                     }
-                    _ => Ok(id),
-                })
-            });
+
+                    opt_res
+                },
+            );
 
         if let Ok(id) = res {
-            let res = match self.nodes.get(id) {
-                Node::Item(i) => Res::Def(
-                    match i {
-                        Item::Mod(_) => DefKind::Mod,
-                        Item::TypeDef(_) => DefKind::Adt,
-                        Item::VariantDef(_) => DefKind::Variant,
-                        Item::Fn(_) => DefKind::Func,
-                        Item::Use(_) | Item::FieldDef(_) => unreachable!(),
-                        Item::Impl(_) => unreachable!(),
-                        Item::TypeAlias(_) => DefKind::TypeAlias,
-                        Item::Trait(_) => DefKind::Trait,
-                    },
-                    id,
-                ),
-                Node::Param(_) => Res::Local(id),
-                Node::Expr(Expr {
-                    id: _,
-                    kind: ExprKind::Let(_, _, _),
-                }) => Res::Local(id),
-                Node::GenericParam(param) => Res::Def(DefKind::GenericParam, param.id),
-                Node::Expr(_) | Node::Ty(_) => unreachable!(),
-            };
-            self.resolutions.insert(path_id, res);
+            self.resolutions
+                .insert(path_id, Res::from_id(id, self.nodes));
         }
         res
     }

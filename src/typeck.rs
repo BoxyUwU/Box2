@@ -3,7 +3,10 @@ use std::{collections::HashMap, iter::FromIterator};
 use crate::{
     ast::{self, NodeId, Nodes},
     resolve::{DefKind, Res},
-    tir::*,
+    tir::{
+        building::{build_args_for_path, build_ty, TirBuilder},
+        *,
+    },
     tokenize::{Literal, Span},
 };
 
@@ -17,12 +20,12 @@ pub struct FnChecker<'ast, 'm, 't> {
     pub resolutions: &'m HashMap<NodeId, Res<NodeId>>,
     pub body_sources: &'m HashMap<BodyId, BodySource<'t>>,
 
-    pub tcx: &'t TirCtx<'t>,
+    pub tcx: &'m TirBuilder<'t>,
     pub typeck_results: HashMap<TirId, TypeckResults<'t>>,
 }
 
-impl<'ast, 'm, 't> visit::Visitor for FnChecker<'ast, 'm, 't> {
-    fn visit_fn(&mut self, f: &Fn<'_>) {
+impl<'ast, 'm, 't> visit::Visitor<'t> for FnChecker<'ast, 'm, 't> {
+    fn visit_fn(&mut self, f: &Fn<'t>) {
         visit::super_visit_fn(self, f);
 
         let r = typeck_fn(f, self.tcx, &self.body_sources, self.ast, self.resolutions);
@@ -35,8 +38,8 @@ pub enum TypeckError<'t> {
     UnconstrainedInfer(NodeId, InferId, Span),
 }
 pub fn typeck_fn<'ast, 't>(
-    Fn { body, generics, .. }: &'_ Fn<'_>,
-    tcx: &'t TirCtx<'t>,
+    Fn { body, generics, .. }: &'_ Fn<'t>,
+    tcx: &TirBuilder<'t>,
     body_sources: &HashMap<BodyId, BodySource<'t>>,
     ast: &'ast Nodes<'ast>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
@@ -44,8 +47,8 @@ pub fn typeck_fn<'ast, 't>(
     // FIXME: param tys wf
     // FIXME: ret tys wf
 
-    let (body_id, body_src) = match body {
-        Some(body) => (*body, body_sources[body]),
+    let body_src = match body {
+        Some(body) => body_sources[body],
         None => {
             return TypeckResults {
                 tys: HashMap::new(),
@@ -68,7 +71,15 @@ pub fn typeck_fn<'ast, 't>(
     node_tys.insert(body_src.expr, var);
     infer_ctx.eq(Ty::Infer(var), *body_src.ret, ret_ty_span);
 
-    typeck_expr(body, ast, resolutions, &mut infer_ctx, &mut node_tys);
+    typeck_expr(
+        body,
+        ast,
+        tcx,
+        resolutions,
+        &mut infer_ctx,
+        &mut node_tys,
+        generics,
+    );
     let infcx_errs = std::mem::take(&mut infer_ctx.errors);
     node_tys
         .iter()
@@ -153,11 +164,11 @@ impl<'t> InferCtxt<'t> {
         id
     }
 
-    fn resolve_ty(&self, mut ty: Ty) -> Ty {
+    fn resolve_ty(&self, mut ty: Ty<'t>) -> Ty<'t> {
         loop {
             let infer = match ty {
-                Ty::Float | Ty::Int | Ty::Adt(_, _) | Ty::Unit => return ty,
                 Ty::Infer(inf) => inf,
+                _ => return ty,
             };
 
             match self.constraints.get(&infer) {
@@ -167,41 +178,47 @@ impl<'t> InferCtxt<'t> {
         }
     }
 
-    fn eq(&mut self, a: Ty, b: Ty, span: Span) {
+    fn eq(&mut self, a: Ty<'t>, b: Ty<'t>, span: Span) {
         // FIXME occurs check
         let a = self.resolve_ty(a);
         let b = self.resolve_ty(b);
 
         match (a, b) {
+            // FIXME: type visitor
+            (Ty::Error, _) | (_, Ty::Error) => return,
             (Ty::Infer(a), Ty::Infer(b)) => match a == b {
                 true => (),
                 false => {
                     self.constraints.try_insert(a, Ty::Infer(b)).unwrap();
                 }
             },
-            (Ty::Infer(a), Ty::Float | Ty::Int | Ty::Adt(_, _) | Ty::Unit) => {
+            // FIXME: universe errors
+            (Ty::Infer(a), _) => {
                 self.constraints.try_insert(a, b).unwrap();
             }
-            (Ty::Float | Ty::Adt(_, _) | Ty::Int | Ty::Unit, Ty::Infer(b)) => {
+            (_, Ty::Infer(b)) => {
                 self.constraints.try_insert(b, a).unwrap();
             }
             (
-                Ty::Adt(_, _) | Ty::Float | Ty::Unit | Ty::Int,
-                Ty::Int | Ty::Adt(_, _) | Ty::Float | Ty::Unit,
+                Ty::Placeholder(_, _) | Ty::Adt(_, _) | Ty::Float | Ty::Unit | Ty::Int,
+                Ty::Placeholder(_, _) | Ty::Int | Ty::Adt(_, _) | Ty::Float | Ty::Unit,
             ) => match a == b {
                 true => (),
                 false => self.errors.push(ExpectedFound(a, b, span)),
             },
+            (Ty::Bound(_, _), _) | (_, Ty::Bound(_, _)) => unreachable!(),
         }
     }
 }
 
-pub fn typeck_expr<'ast>(
+pub fn typeck_expr<'ast, 't>(
     this_expr: &ast::Expr<'_>,
     ast: &'ast Nodes<'ast>,
+    tcx: &TirBuilder<'t>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
-    infer_ctx: &mut InferCtxt,
+    infer_ctx: &mut InferCtxt<'t>,
     node_tys: &mut HashMap<NodeId, InferId>,
+    generics: &Generics<'t>,
 ) {
     match this_expr.kind {
         ast::ExprKind::Let(binding, rhs, span) => {
@@ -212,14 +229,14 @@ pub fn typeck_expr<'ast>(
             let rhs_var = infer_ctx.new_var(rhs.span());
             node_tys.insert(rhs.id, rhs_var);
             infer_ctx.eq(Ty::Infer(pat_var), Ty::Infer(rhs_var), span);
-            typeck_expr(rhs, ast, resolutions, infer_ctx, node_tys);
+            typeck_expr(rhs, ast, tcx, resolutions, infer_ctx, node_tys, generics);
         }
         ast::ExprKind::Block(stmts, block_span) => {
             // fixme  block layout is fucky
             for (expr, _) in stmts {
                 let var = infer_ctx.new_var(expr.span());
                 node_tys.insert(expr.id, var);
-                typeck_expr(expr, ast, resolutions, infer_ctx, node_tys);
+                typeck_expr(expr, ast, tcx, resolutions, infer_ctx, node_tys, generics);
             }
 
             match stmts.last() {
@@ -240,12 +257,16 @@ pub fn typeck_expr<'ast>(
             field_inits,
             span,
         }) => {
-            let id = match resolutions[&path.id] {
+            let id = match resolutions[&this_expr.id] {
                 Res::Def(DefKind::Adt, id) => id,
                 Res::Def(DefKind::Variant, id) => ast.get_variants_adt(id).id,
                 _ => unreachable!(),
             };
-            infer_ctx.eq(Ty::Adt(id), Ty::Infer(node_tys[&this_expr.id]), span);
+            let id = tcx.get_id(id).unwrap();
+            let (_, args) = build_args_for_path(&path, tcx, resolutions, generics);
+            infer_ctx.eq(Ty::Adt(id, args), Ty::Infer(node_tys[&this_expr.id]), span);
+
+            let adt_generics = tcx.get_item(id).unwrap_adt().generics;
 
             for field_init in field_inits {
                 let var = infer_ctx.new_var(field_init.span);
@@ -255,12 +276,20 @@ pub fn typeck_expr<'ast>(
                     _ => unreachable!(),
                 };
                 let field_def = ast.get(field_id).unwrap_field_def();
-                let field_ty = match resolutions[&field_def.ty.id] {
-                    Res::Def(DefKind::Adt, id) => Ty::Adt(id),
-                    _ => unreachable!(),
-                };
-                infer_ctx.eq(field_ty, Ty::Infer(var), field_init.span);
-                typeck_expr(field_init.expr, ast, resolutions, infer_ctx, node_tys);
+
+                // FIXME: need to `field_ty.subst(args)`
+                // FIXME: it's silly to re-lower this ty instead of accessing it from tir
+                let field_ty = build_ty(field_def.ty, tcx, resolutions, adt_generics);
+                infer_ctx.eq(*field_ty, Ty::Infer(var), field_init.span);
+                typeck_expr(
+                    field_init.expr,
+                    ast,
+                    tcx,
+                    resolutions,
+                    infer_ctx,
+                    node_tys,
+                    generics,
+                );
             }
         }
         ast::ExprKind::Path(ast::Path { span, .. }) => {

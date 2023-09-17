@@ -177,12 +177,15 @@ fn parse_expr<'a>(
         let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
         nodes.push_expr(ExprKind::UnOp(unop, rhs, unop_span.join(rhs.span())))
     } else if let Ok((_, start_span)) = tok.peek_if_ident() {
-        let path = nodes.push_expr(ExprKind::Path(parse_path(tok, nodes)?));
+        let path = parse_path(tok, nodes)?;
 
         // handle type construction i.e.
         // `Foo { field: 10 + 1 }`
         match tok.next_if(Token::LBrace) {
-            Err(_) => path,
+            Err(_) => {
+                let path = nodes.push_expr(ExprKind::Path(path));
+                path
+            }
             Ok(_) => {
                 let mut fields = Vec::new();
                 while let Ok((ident, span)) = tok.next_if_ident() {
@@ -288,7 +291,13 @@ fn parse_path<'a>(
             .next_if_ident()
             .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
         let args = parse_opt_gen_args(tok, nodes)?;
-        Ok((ident, args, span))
+        let seg = nodes.push_path_seg(|id| PathSeg {
+            ident,
+            args,
+            span,
+            id,
+        });
+        Ok(seg)
     };
 
     let mut segments = vec![parse_seg(tok, nodes)?];
@@ -298,7 +307,7 @@ fn parse_path<'a>(
     }
 
     Ok(Path {
-        span: segments[0].2.join(segments.last().unwrap().2),
+        span: segments[0].span.join(segments.last().unwrap().span),
         segments: nodes.arena.alloc_slice_fill_iter(segments),
     })
 }
@@ -668,12 +677,15 @@ fn parse_fields<'a>(
                 nodes.push_ty(|id| Ty {
                     id,
                     path: Path {
-                        segments: nodes.arena.alloc_slice_fill_iter([(
-                            ty_def.name,
-                            // FIXME: is this the correct way for us to represent this?
-                            GenArgs(&[]),
-                            ty_def.name_span,
-                        )]),
+                        segments: nodes
+                            .arena
+                            .alloc_slice_fill_iter([nodes.push_path_seg(|id| PathSeg {
+                                ident: ty_def.name,
+                                // FIXME: is this the correct way for us to represent this?
+                                args: GenArgs(&[]),
+                                span: ty_def.name_span,
+                                id,
+                            })]),
                         span: ty_def.name_span,
                     },
                     span: ty_def.name_span,
@@ -772,7 +784,7 @@ pub fn parse_use<'a>(
                 .map_err(|(found, span)| diag_expected_found("IDENTIFER", found, span))?
                 .0
         }
-        Err(_) => path.segments.last().unwrap().0,
+        Err(_) => path.segments.last().unwrap().ident,
     };
 
     tok.next_if(Token::SemiColon)

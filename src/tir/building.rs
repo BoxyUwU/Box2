@@ -34,6 +34,10 @@ impl<'t> TirBuilder<'t> {
         self.bodies.get(&id).map(|(_, _, id)| *id)
     }
 
+    pub fn get_item(&self, id: TirId) -> &'t Item<'t> {
+        self.empty_tir.items.borrow().get(&id).unwrap()
+    }
+
     pub fn register_item(&self, id: TirId, item: &'t Item<'t>) {
         let mut items = self.empty_tir.items.borrow_mut();
         let prev_inserted = items.insert(id, item);
@@ -67,7 +71,7 @@ pub fn build<'a, 't>(
     root: NodeId,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
     empty_tir: &'t TirCtx<'t>,
-) -> (&'t Mod<'t>, HashMap<BodyId, BodySource<'t>>) {
+) -> (&'t Mod<'t>, HashMap<BodyId, BodySource<'t>>, TirBuilder<'t>) {
     struct EarlyTirBuild<'t> {
         tir_builder: TirBuilder<'t>,
     }
@@ -146,16 +150,17 @@ pub fn build<'a, 't>(
     };
     let mut early_builder = EarlyTirBuild { tir_builder };
     early_builder.visit_mod(module);
-    let tir_builder = early_builder.tir_builder;
+    let mut tir_builder = early_builder.tir_builder;
 
-    let body_sources = tir_builder
-        .bodies
+    let module = build_mod(ast, module, resolutions, &tir_builder);
+
+    let body_sources = std::mem::take(&mut tir_builder.bodies)
         .into_iter()
         .map(|(expr_id, (owner, params, body_id))| {
             let item = tir_builder.empty_tir.get_item(owner);
             let (params, ret_ty) = match item {
                 Item::Fn(func) => (
-                    tir_builder.empty_tir.arena.alloc_slice_fill_iter(
+                    empty_tir.arena.alloc_slice_fill_iter(
                         func.params
                             .iter()
                             .zip(params.iter())
@@ -179,33 +184,18 @@ pub fn build<'a, 't>(
         })
         .collect::<HashMap<_, _>>();
 
-    (
-        build_mod(ast, module, resolutions, &tir_builder),
-        body_sources,
-    )
+    (module, body_sources, tir_builder)
 }
 
 pub fn build_ty<'t>(
     ty: &ast::Ty,
     tcx: &TirBuilder<'t>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
-    item_generics: &Generics<'_>,
+    item_generics: &Generics<'t>,
 ) -> &'t Ty<'t> {
+    let (_, args) = build_args_for_path(&ty.path, tcx, resolutions, item_generics);
     match resolutions[&ty.id] {
         Res::Def(DefKind::Adt, id) => {
-            for (_, args, sp) in ty.path.segments[..(ty.path.segments.len() - 1)].iter() {
-                if args.0.len() > 0 {
-                    tcx.empty_tir.err(diag_gen_args_provided_when_shouldnt(*sp));
-                }
-            }
-            let (_, args, _) = ty.path.segments.last().unwrap();
-            let args = GenArgs(tcx.empty_tir.arena.alloc_slice_fill_iter(args.0.iter().map(
-                |arg| match arg {
-                    ast::GenArg::Ty(ty) => {
-                        GenArg::Ty(build_ty(ty, tcx, resolutions, item_generics))
-                    }
-                },
-            )));
             let tir_id = tcx.get_id(id).unwrap();
             tcx.empty_tir.arena.alloc(Ty::Adt(tir_id, args))
         }
@@ -218,6 +208,68 @@ pub fn build_ty<'t>(
         }
         Res::Def(_, _) | Res::Local(_) => unreachable!(),
     }
+}
+
+pub fn build_args_for_path<'t>(
+    path: &ast::Path<'_>,
+    tcx: &TirBuilder<'t>,
+    resolutions: &HashMap<NodeId, Res<NodeId>>,
+    generics: &Generics<'t>,
+) -> (TirId, GenArgs<'t>) {
+    let mut args = vec![];
+
+    for seg in path.segments {
+        let seg = build_path_seg(**seg, tcx, resolutions, generics);
+        args.extend(seg.args.0.into_iter().map(|arg| *arg));
+    }
+
+    let (Res::Def(_, id) | Res::Local(id)) = resolutions[&path.segments.last().unwrap().id];
+    let id = tcx.lowered_ids[&id];
+
+    (id, GenArgs(tcx.empty_tir.arena.alloc_slice_fill_iter(args)))
+}
+
+pub fn build_path_seg<'t>(
+    seg: ast::PathSeg<'_>,
+    tcx: &TirBuilder<'t>,
+    resolutions: &HashMap<NodeId, Res<NodeId>>,
+    generics: &Generics<'t>,
+) -> &'t PathSeg<'t> {
+    let lower_args = |args: ast::GenArgs<'_>| {
+        GenArgs(
+            tcx.empty_tir
+                .arena
+                .alloc_slice_fill_iter(args.0.iter().map(|arg| match arg {
+                    ast::GenArg::Ty(ty) => GenArg::Ty(build_ty(ty, tcx, resolutions, generics)),
+                })),
+        )
+    };
+
+    let res = resolutions[&seg.id];
+    let seg = match res {
+        Res::Def(DefKind::TypeAlias | DefKind::Adt | DefKind::Func | DefKind::Trait, _) => {
+            let args = lower_args(seg.args);
+
+            PathSeg {
+                args,
+                res: res.map_id(|id| tcx.lowered_ids[&id]),
+            }
+        }
+        Res::Def(DefKind::GenericParam | DefKind::Mod | DefKind::Variant, _) => {
+            if seg.args.0.len() > 0 {
+                tcx.empty_tir
+                    .err(diag_gen_args_provided_when_shouldnt(seg.span));
+            }
+
+            PathSeg {
+                args: GenArgs(&[]),
+                res: res.map_id(|id| tcx.lowered_ids[&id]),
+            }
+        }
+        Res::Def(DefKind::Field, _) => unreachable!("paths cant resolve to fields"),
+        Res::Local(_) => panic!("no"),
+    };
+    tcx.empty_tir.arena.alloc(seg)
 }
 
 /// Not all ast items are present in Tir, if attempting to build tir for such an item kind
@@ -273,7 +325,7 @@ pub fn build_generics<'a, 't>(
         param_id_to_var: tir.empty_tir.arena.alloc(
             parent_generics
                 .map(|generics| {
-                    let generics = generics.param_id_to_var.clone();
+                    let mut generics = generics.param_id_to_var.clone();
                     generics.extend(params.iter().map(|param| (param.id, param.index)));
                     generics
                 })
@@ -481,12 +533,15 @@ fn build_impl<'a, 't>(
     let assoc_items = tir.empty_tir.arena.alloc_slice_fill_iter(assoc_items);
 
     let of_trait = {
-        for (_, args, sp) in impl_.of_trait.segments[..(impl_.of_trait.segments.len() - 1)].iter() {
+        for ast::PathSeg { args, span, .. } in
+            impl_.of_trait.segments[..(impl_.of_trait.segments.len() - 1)].iter()
+        {
             if args.0.len() > 0 {
-                tir.empty_tir.err(diag_gen_args_provided_when_shouldnt(*sp));
+                tir.empty_tir
+                    .err(diag_gen_args_provided_when_shouldnt(*span));
             }
         }
-        let (_, args, _) = impl_.of_trait.segments.last().unwrap();
+        let ast::PathSeg { args, .. } = impl_.of_trait.segments.last().unwrap();
         let args =
             GenArgs(tir.empty_tir.arena.alloc_slice_fill_iter(args.0.iter().map(
                 |arg| match arg {
