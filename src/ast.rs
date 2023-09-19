@@ -21,8 +21,9 @@ impl<'a> Nodes<'a> {
     }
 
     pub fn push_node(&'a self, f: impl FnOnce(NodeId) -> Node<'a>) -> &'a Node<'a> {
-        let mut ids = self.ids.borrow_mut();
+        let ids = self.ids.borrow();
         let id = NodeId(ids.len());
+        drop(ids);
         let node = f(id);
         if let Node::Item(Item::TypeDef(TypeDef { id, variants, .. })) = node {
             let mut variant_parents = self.variant_parent.borrow_mut();
@@ -31,6 +32,7 @@ impl<'a> Nodes<'a> {
             }
         }
         let node = self.arena.alloc(node);
+        let mut ids = self.ids.borrow_mut();
         ids.push(&*node);
         node
     }

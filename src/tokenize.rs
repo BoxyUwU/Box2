@@ -57,6 +57,7 @@ pub enum Kw {
     Trait,
     Impl,
     For,
+    New,
 }
 
 #[derive(Logos, Copy, Clone, Debug, PartialEq)]
@@ -87,6 +88,7 @@ pub enum Token<'a> {
     #[token("impl", |_| Kw::Impl)]
     #[token("trait", |_| Kw::Trait)]
     #[token("for", |_| Kw::For)]
+    #[token("new", |_| Kw::New)]
     Kw(Kw),
 
     #[token("::")]

@@ -114,6 +114,7 @@ impl Kw {
             Kw::Impl => "impl".into(),
             Kw::Trait => "trait".into(),
             Kw::For => "for".into(),
+            Kw::New => "new".into(),
         }
     }
 }
@@ -176,15 +177,18 @@ fn parse_expr<'a>(
         let (_, r_bp) = unop.bp();
         let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
         nodes.push_expr(ExprKind::UnOp(unop, rhs, unop_span.join(rhs.span())))
-    } else if let Ok((_, start_span)) = tok.peek_if_ident() {
+    } else if let Ok(_) = tok.peek_if_ident() {
+        let path = parse_path(tok, nodes)?;
+        let path = nodes.push_expr(ExprKind::Path(path));
+        path
+    } else if let Ok((_, start_span)) = tok.next_if(Token::Kw(Kw::New)) {
         let path = parse_path(tok, nodes)?;
 
         // handle type construction i.e.
-        // `Foo { field: 10 + 1 }`
+        // `new Foo { field: 10 + 1 }`
         match tok.next_if(Token::LBrace) {
-            Err(_) => {
-                let path = nodes.push_expr(ExprKind::Path(path));
-                path
+            Err((found, span)) => {
+                return Err(diag_expected_found("{", found, span));
             }
             Ok(_) => {
                 let mut fields = Vec::new();

@@ -736,17 +736,17 @@ mod test {
             }
 
             fn foo() {
-                Foo {
+                new Foo {
                     field_awd: FieldTy,
                 };
 
-                Bar {
+                new Bar {
                     field: 10,
                 };
 
-                Bar::Bazz {};
+                new Bar::Bazz {};
 
-                Blah {};
+                new Blah {};
             }
         ";
 
@@ -796,23 +796,23 @@ mod test {
             }
 
             fn foo() {
-                FieldTy {};
+                new FieldTy {};
 
-                Foo {
+                new Foo {
                     field: 10 + 2,
                     fielddd: 12 + 13
                 };
 
-                FooTwo::Bar {
+                new FooTwo::Bar {
                     field: 122222,
                 };
 
-                Nested::Foo::Field::Baz {
+                new Nested::Foo::Field::Baz {
                     inner: 12,
                 };
 
-                Nested::Foo {
-                    field: Nested::Foo::Field::Baz {
+                new Nested::Foo {
+                    field: new Nested::Foo::Field::Baz {
                         inner: 10000,
                     },
                 };

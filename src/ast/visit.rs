@@ -56,17 +56,17 @@ pub fn super_visit_mod<V: Visitor>(v: &mut V, module: &Module<'_>) {
 
 pub fn super_visit_type_def<V: Visitor>(v: &mut V, def: &TypeDef<'_>) {
     for variant in def.variants {
-        super_visit_variant_def(v, variant);
+        v.visit_variant_def(variant);
     }
 }
 
 pub fn super_visit_variant_def<V: Visitor>(v: &mut V, def: &VariantDef<'_>) {
     for field in def.field_defs {
-        super_visit_field_def(v, field);
+        v.visit_field_def(field);
     }
 
     for ty in def.type_defs {
-        super_visit_type_def(v, ty);
+        v.visit_type_def(ty);
     }
 }
 

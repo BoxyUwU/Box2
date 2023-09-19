@@ -17,11 +17,20 @@ fn diag_gen_args_provided_when_shouldnt(span: Span) -> Diagnostic<usize> {
         ])
 }
 
+fn diag_wrong_gen_args_count(span: Span, expected_count: usize) -> Diagnostic<usize> {
+    Diagnostic::error()
+        .with_message(&format!("unexpected amount of generic args provided"))
+        .with_labels(vec![
+            Label::primary(0, span).with_message(&format!("Expected {expected_count} args"))
+        ])
+}
+
 pub struct TirBuilder<'t> {
     empty_tir: &'t TirCtx<'t>,
     next_tir_id: TirId,
     next_body_id: BodyId,
 
+    generics: HashMap<TirId, &'t Generics<'t>>,
     lowered_ids: HashMap<NodeId, TirId>,
     bodies: HashMap<NodeId, (TirId, Vec<NodeId>, BodyId)>,
 }
@@ -36,6 +45,10 @@ impl<'t> TirBuilder<'t> {
 
     pub fn get_item(&self, id: TirId) -> &'t Item<'t> {
         self.empty_tir.items.borrow().get(&id).unwrap()
+    }
+
+    pub fn get_generics(&self, id: TirId) -> &'t Generics<'t> {
+        self.generics[&id]
     }
 
     pub fn register_item(&self, id: TirId, item: &'t Item<'t>) {
@@ -78,13 +91,28 @@ pub fn build<'a, 't>(
 ) -> (&'t Mod<'t>, HashMap<BodyId, BodySource<'t>>, TirBuilder<'t>) {
     struct EarlyTirBuild<'t> {
         tir_builder: TirBuilder<'t>,
+
+        generics_stack: Vec<&'t Generics<'t>>,
     }
 
     impl<'t> EarlyTirBuild<'t> {
-        fn visit_generics(&mut self, generics: &ast::Generics<'_>) {
+        fn push_generics(&mut self, id: TirId, generics: &ast::Generics<'_>) {
             for param in generics.params {
                 self.tir_builder.new_lowered_tir_id(param.id);
             }
+            let generics = build_generics(
+                *generics,
+                id,
+                &self.tir_builder,
+                self.generics_stack.last().copied(),
+            );
+            self.generics_stack.push(generics);
+            self.tir_builder.generics.insert(id, generics);
+        }
+        fn pop_generics(&mut self) {
+            self.generics_stack
+                .pop()
+                .expect("popping generics when nothing is on stack");
         }
     }
     impl<'t> ast::visit::Visitor for EarlyTirBuild<'t> {
@@ -94,9 +122,10 @@ pub fn build<'a, 't>(
         }
 
         fn visit_type_def(&mut self, def: &ast::TypeDef<'_>) {
-            self.tir_builder.new_lowered_tir_id(def.id);
-            self.visit_generics(&def.generics);
-            ast::visit::super_visit_type_def(self, def)
+            let id = self.tir_builder.new_lowered_tir_id(def.id);
+            self.push_generics(id, &def.generics);
+            ast::visit::super_visit_type_def(self, def);
+            self.pop_generics();
         }
 
         fn visit_variant_def(&mut self, def: &ast::VariantDef<'_>) {
@@ -110,14 +139,15 @@ pub fn build<'a, 't>(
         }
 
         fn visit_type_alias(&mut self, alias: &ast::TypeAlias<'_>) {
-            self.tir_builder.new_lowered_tir_id(alias.id);
-            self.visit_generics(&alias.generics);
-            ast::visit::super_visit_type_alias(self, alias)
+            let id = self.tir_builder.new_lowered_tir_id(alias.id);
+            self.push_generics(id, &alias.generics);
+            ast::visit::super_visit_type_alias(self, alias);
+            self.pop_generics();
         }
 
         fn visit_fn(&mut self, func: &ast::Fn<'_>) {
             let owner = self.tir_builder.new_lowered_tir_id(func.id);
-            self.visit_generics(&func.generics);
+            self.push_generics(owner, &func.generics);
 
             if let Some(body) = func.body {
                 self.tir_builder.new_body_id(
@@ -127,19 +157,22 @@ pub fn build<'a, 't>(
                 );
             }
 
-            ast::visit::super_visit_fn(self, func)
+            ast::visit::super_visit_fn(self, func);
+            self.pop_generics();
         }
 
         fn visit_trait(&mut self, trait_: &ast::Trait<'_>) {
-            self.tir_builder.new_lowered_tir_id(trait_.id);
-            self.visit_generics(&trait_.generics);
-            ast::visit::super_visit_trait(self, trait_)
+            let id = self.tir_builder.new_lowered_tir_id(trait_.id);
+            self.push_generics(id, &trait_.generics);
+            ast::visit::super_visit_trait(self, trait_);
+            self.pop_generics();
         }
 
         fn visit_impl(&mut self, impl_: &ast::Impl<'_>) {
-            self.tir_builder.new_lowered_tir_id(impl_.id);
-            self.visit_generics(&impl_.generics);
-            ast::visit::super_visit_impl(self, impl_)
+            let id = self.tir_builder.new_lowered_tir_id(impl_.id);
+            self.push_generics(id, &impl_.generics);
+            ast::visit::super_visit_impl(self, impl_);
+            self.pop_generics();
         }
     }
 
@@ -149,10 +182,15 @@ pub fn build<'a, 't>(
         empty_tir,
         next_tir_id: TirId(0),
         next_body_id: BodyId(0),
+
+        generics: HashMap::new(),
         lowered_ids: HashMap::new(),
         bodies: HashMap::new(),
     };
-    let mut early_builder = EarlyTirBuild { tir_builder };
+    let mut early_builder = EarlyTirBuild {
+        tir_builder,
+        generics_stack: vec![],
+    };
     early_builder.visit_mod(module);
     let mut tir_builder = early_builder.tir_builder;
 
@@ -260,14 +298,24 @@ pub fn build_path_seg<'t>(
         )
     };
 
-    let res = resolutions[&seg.id];
+    let res = resolutions[&seg.id].map_id(|id| tcx.lowered_ids[&id]);
     let seg = match res {
         Res::Def(DefKind::TypeAlias | DefKind::Adt | DefKind::Func | DefKind::Trait, _) => {
             let args = lower_args(seg.args);
+            let (Res::Def(_, id) | Res::Local(id)) = res;
+            let generics = tcx.get_generics(id);
 
-            PathSeg {
-                args,
-                res: res.map_id(|id| tcx.lowered_ids[&id]),
+            if args.0.len() != generics.params.len() {
+                tcx.empty_tir
+                    .err(diag_wrong_gen_args_count(seg.span, generics.params.len()));
+                PathSeg {
+                    args: GenArgs(tcx.empty_tir.arena.alloc_slice_fill_iter(
+                        (0..generics.params.len()).map(|_| GenArg::Ty(&Ty::Error)),
+                    )),
+                    res,
+                }
+            } else {
+                PathSeg { args, res }
             }
         }
         Res::Def(DefKind::GenericParam | DefKind::Mod | DefKind::Variant, _) => {
@@ -278,7 +326,7 @@ pub fn build_path_seg<'t>(
 
             PathSeg {
                 args: GenArgs(&[]),
-                res: res.map_id(|id| tcx.lowered_ids[&id]),
+                res,
             }
         }
         Res::Def(DefKind::Field, _) => unreachable!("paths cant resolve to fields"),
@@ -297,9 +345,9 @@ pub fn build_item<'a, 't>(
 ) -> Option<&'t Item<'t>> {
     let item = match item {
         ast::Item::Mod(m) => Item::Mod(*build_mod(ast, m, resolutions, tir)),
-        ast::Item::TypeDef(t) => Item::Adt(*build_adt_def(ast, t, resolutions, tir, None)),
-        ast::Item::TypeAlias(a) => Item::TyAlias(*build_type_alias(ast, a, resolutions, tir, None)),
-        ast::Item::Fn(f) => Item::Fn(*build_fn(ast, f, resolutions, tir, None)),
+        ast::Item::TypeDef(t) => Item::Adt(*build_adt_def(ast, t, resolutions, tir)),
+        ast::Item::TypeAlias(a) => Item::TyAlias(*build_type_alias(ast, a, resolutions, tir)),
+        ast::Item::Fn(f) => Item::Fn(*build_fn(ast, f, resolutions, tir)),
         ast::Item::Trait(t) => Item::Trait(*build_trait(ast, t, resolutions, tir)),
         ast::Item::Impl(i) => Item::Impl(*build_impl(ast, i, resolutions, tir)),
 
@@ -387,11 +435,10 @@ pub fn build_adt_def<'a, 't>(
     adt: &ast::TypeDef<'a>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
     tir: &TirBuilder<'t>,
-    parent_generics: Option<&'t Generics<'t>>,
 ) -> &'t Adt<'t> {
     let id = tir.get_id(adt.id).unwrap();
 
-    let generics = build_generics(adt.generics, id, tir, parent_generics);
+    let generics = tir.get_generics(id);
 
     let variants = adt.variants.iter().map(|variant| {
         let variant_id = tir.get_id(variant.id).unwrap();
@@ -399,7 +446,7 @@ pub fn build_adt_def<'a, 't>(
         let adts = variant
             .type_defs
             .iter()
-            .map(|type_def| *build_adt_def(ast, type_def, resolutions, tir, Some(generics)));
+            .map(|type_def| *build_adt_def(ast, type_def, resolutions, tir));
         let adts = tir.empty_tir.arena.alloc_slice_fill_iter(adts);
 
         let fields = variant.field_defs.iter().map(|field_def| {
@@ -440,11 +487,10 @@ fn build_type_alias<'a, 't>(
     alias: &ast::TypeAlias<'a>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
     tir: &TirBuilder<'t>,
-    parent_generics: Option<&'t Generics<'t>>,
 ) -> &'t TyAlias<'t> {
     let id = tir.get_id(alias.id).unwrap();
 
-    let generics = build_generics(alias.generics, id, tir, parent_generics);
+    let generics = tir.get_generics(id);
 
     let tir_alias = tir::TyAlias {
         id,
@@ -465,11 +511,9 @@ fn build_fn<'a, 't>(
     func: &ast::Fn<'a>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
     tir: &TirBuilder<'t>,
-    parent_generics: Option<&'t Generics<'t>>,
 ) -> &'t Fn<'t> {
     let id = tir.get_id(func.id).unwrap();
-
-    let generics = build_generics(func.generics, id, tir, parent_generics);
+    let generics = tir.get_generics(id);
 
     let params = func.params.iter().map(|param| tir::Param {
         ty: build_ty(param.ty.unwrap(), tir, resolutions, &generics),
@@ -502,18 +546,15 @@ fn build_trait<'a, 't>(
     tir: &TirBuilder<'t>,
 ) -> &'t Trait<'t> {
     let id = tir.get_id(trait_.id).unwrap();
-
-    let generics = build_generics(trait_.generics, id, tir, None);
+    let generics = tir.get_generics(id);
 
     let assoc_items = trait_
         .assoc_items
         .iter()
         .map(|assoc_item| match assoc_item {
-            ast::AssocItem::Fn(f) => {
-                AssocItem::Fn(*build_fn(ast, f, resolutions, tir, Some(generics)))
-            }
+            ast::AssocItem::Fn(f) => AssocItem::Fn(*build_fn(ast, f, resolutions, tir)),
             ast::AssocItem::Type(t) => {
-                AssocItem::TyAlias(*build_type_alias(ast, t, resolutions, tir, Some(generics)))
+                AssocItem::TyAlias(*build_type_alias(ast, t, resolutions, tir))
             }
         });
     let assoc_items = tir.empty_tir.arena.alloc_slice_fill_iter(assoc_items);
@@ -536,14 +577,11 @@ fn build_impl<'a, 't>(
     tir: &TirBuilder<'t>,
 ) -> &'t Impl<'t> {
     let id = tir.get_id(impl_.id).unwrap();
-
-    let generics = build_generics(impl_.generics, id, tir, None);
+    let generics = tir.get_generics(id);
 
     let assoc_items = impl_.assoc_items.iter().map(|assoc_item| match assoc_item {
-        ast::AssocItem::Fn(f) => AssocItem::Fn(*build_fn(ast, f, resolutions, tir, Some(generics))),
-        ast::AssocItem::Type(t) => {
-            AssocItem::TyAlias(*build_type_alias(ast, t, resolutions, tir, Some(generics)))
-        }
+        ast::AssocItem::Fn(f) => AssocItem::Fn(*build_fn(ast, f, resolutions, tir)),
+        ast::AssocItem::Type(t) => AssocItem::TyAlias(*build_type_alias(ast, t, resolutions, tir)),
     });
     let assoc_items = tir.empty_tir.arena.alloc_slice_fill_iter(assoc_items);
 
