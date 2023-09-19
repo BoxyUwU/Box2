@@ -6,8 +6,11 @@ use codespan_reporting::diagnostic::Diagnostic;
 use crate::{
     ast,
     resolve::Res,
+    tir::visit::{TypeFolder, TypeSuperFoldable},
     tokenize::{Literal, Span},
 };
+
+use self::visit::TypeFoldable;
 
 pub mod building;
 pub mod visit;
@@ -44,8 +47,8 @@ impl<'t> TirCtx<'t> {
 pub struct BodyId(usize);
 #[derive(Copy, Clone, Debug)]
 pub struct BodySource<'t> {
-    pub params: &'t [(ast::NodeId, &'t Ty<'t>)],
-    pub ret: &'t Ty<'t>,
+    pub params: &'t [(ast::NodeId, EarlyBinder<&'t Ty<'t>>)],
+    pub ret: EarlyBinder<&'t Ty<'t>>,
     pub expr: ast::NodeId,
 }
 
@@ -67,6 +70,77 @@ pub struct Universe(pub u32);
 pub struct DebruijnIndex(pub u32);
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct InferId(pub usize);
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct EarlyBinder<T>(T);
+
+impl<T> EarlyBinder<T> {
+    pub fn instantiate<'t>(self, args: GenArgs<'t>, tcx: &'t TirCtx<'t>) -> T
+    where
+        T: TypeFoldable<'t>,
+    {
+        struct Folder<'t> {
+            args: GenArgs<'t>,
+            tcx: &'t TirCtx<'t>,
+        }
+        impl<'t> TypeFolder<'t> for Folder<'t> {
+            fn tcx(&self) -> &'t TirCtx<'t> {
+                self.tcx
+            }
+
+            fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
+                match ty {
+                    Ty::Unit
+                    | Ty::Infer(_)
+                    | Ty::Adt(_, _)
+                    | Ty::Placeholder(_, _)
+                    | Ty::Int
+                    | Ty::Float
+                    | Ty::Error => ty.super_fold_with(self),
+                    // FIXME: ideally this would check that the depth is correct
+                    Ty::Bound(_, var) => match self.args.0[var.0 as usize] {
+                        GenArg::Ty(ty) => ty,
+                    },
+                }
+            }
+        }
+
+        self.0.fold_with(&mut Folder { args, tcx })
+    }
+
+    pub fn instantiate_root_placeholders<'t>(self, tcx: &'t TirCtx<'t>) -> T
+    where
+        T: TypeFoldable<'t>,
+    {
+        struct Folder<'t>(&'t TirCtx<'t>);
+        impl<'t> TypeFolder<'t> for Folder<'t> {
+            fn tcx(&self) -> &'t TirCtx<'t> {
+                self.0
+            }
+
+            fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
+                match ty {
+                    Ty::Unit
+                    | Ty::Infer(_)
+                    | Ty::Adt(_, _)
+                    | Ty::Placeholder(_, _)
+                    | Ty::Int
+                    | Ty::Float
+                    | Ty::Error => ty.super_fold_with(self),
+                    // FIXME: ideally this would check that the depth is correct
+                    Ty::Bound(_, var) => self.0.arena.alloc(Ty::Placeholder(Universe(0), *var)),
+                }
+            }
+        }
+
+        self.0.fold_with(&mut Folder(tcx))
+    }
+
+    /// be careful
+    pub fn skip_binder(self) -> T {
+        self.0
+    }
+}
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Ty<'t> {
@@ -123,7 +197,7 @@ pub struct Expr<'a> {
 
 #[derive(Copy, Clone, Debug)]
 pub struct Param<'t> {
-    pub ty: &'t Ty<'t>,
+    pub ty: EarlyBinder<&'t Ty<'t>>,
     pub span: Span,
 }
 
@@ -198,7 +272,7 @@ impl<'t> Item<'t> {
 pub struct Fn<'t> {
     pub id: TirId,
     pub params: &'t [Param<'t>],
-    pub ret_ty: &'t Ty<'t>,
+    pub ret_ty: EarlyBinder<&'t Ty<'t>>,
     pub generics: &'t Generics<'t>,
     pub body: Option<BodyId>,
 }
@@ -223,7 +297,7 @@ pub struct Variant<'t> {
 pub struct Field<'t> {
     pub id: TirId,
     pub name: &'t str,
-    pub ty: &'t Ty<'t>,
+    pub ty: EarlyBinder<&'t Ty<'t>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -231,7 +305,7 @@ pub struct TyAlias<'t> {
     pub id: TirId,
     pub name: &'t str,
     pub generics: &'t Generics<'t>,
-    pub ty: Option<&'t Ty<'t>>,
+    pub ty: Option<EarlyBinder<&'t Ty<'t>>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -245,8 +319,8 @@ pub struct Trait<'t> {
 #[derive(Debug, Copy, Clone)]
 pub struct Impl<'t> {
     pub id: TirId,
-    pub of_trait: (TirId, GenArgs<'t>),
-    pub self_ty: &'t Ty<'t>,
+    pub of_trait: (TirId, EarlyBinder<GenArgs<'t>>),
+    pub self_ty: EarlyBinder<&'t Ty<'t>>,
     pub generics: &'t Generics<'t>,
     pub assoc_items: &'t [AssocItem<'t>],
 }

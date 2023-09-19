@@ -64,6 +64,10 @@ impl<'t> TirBuilder<'t> {
         self.next_tir_id.0 += 1;
         tir_id
     }
+
+    pub fn tcx(&self) -> &'t TirCtx<'t> {
+        self.empty_tir
+    }
 }
 
 pub fn build<'a, 't>(
@@ -192,19 +196,25 @@ pub fn build_ty<'t>(
     tcx: &TirBuilder<'t>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
     item_generics: &Generics<'t>,
-) -> &'t Ty<'t> {
+) -> EarlyBinder<&'t Ty<'t>> {
     let (_, args) = build_args_for_path(&ty.path, tcx, resolutions, item_generics);
     match resolutions[&ty.id] {
         Res::Def(DefKind::Adt, id) => {
             let tir_id = tcx.get_id(id).unwrap();
-            tcx.empty_tir.arena.alloc(Ty::Adt(tir_id, args))
+            EarlyBinder(
+                tcx.empty_tir
+                    .arena
+                    .alloc(Ty::Adt(tir_id, args.skip_binder())),
+            )
         }
         Res::Def(DefKind::GenericParam, id) => {
             let tir_id = tcx.get_id(id).unwrap();
             let var_idx = item_generics.param_id_to_var[&tir_id];
-            tcx.empty_tir
-                .arena
-                .alloc(Ty::Bound(DebruijnIndex(0), BoundVar(var_idx)))
+            EarlyBinder(
+                tcx.empty_tir
+                    .arena
+                    .alloc(Ty::Bound(DebruijnIndex(0), BoundVar(var_idx))),
+            )
         }
         Res::Def(_, _) | Res::Local(_) => unreachable!(),
     }
@@ -215,18 +225,21 @@ pub fn build_args_for_path<'t>(
     tcx: &TirBuilder<'t>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
     generics: &Generics<'t>,
-) -> (TirId, GenArgs<'t>) {
+) -> (TirId, EarlyBinder<GenArgs<'t>>) {
     let mut args = vec![];
 
     for seg in path.segments {
         let seg = build_path_seg(**seg, tcx, resolutions, generics);
-        args.extend(seg.args.0.into_iter().map(|arg| *arg));
+        args.extend(seg.skip_binder().args.0.into_iter().map(|arg| *arg));
     }
 
     let (Res::Def(_, id) | Res::Local(id)) = resolutions[&path.segments.last().unwrap().id];
     let id = tcx.lowered_ids[&id];
 
-    (id, GenArgs(tcx.empty_tir.arena.alloc_slice_fill_iter(args)))
+    (
+        id,
+        EarlyBinder(GenArgs(tcx.empty_tir.arena.alloc_slice_fill_iter(args))),
+    )
 }
 
 pub fn build_path_seg<'t>(
@@ -234,13 +247,15 @@ pub fn build_path_seg<'t>(
     tcx: &TirBuilder<'t>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
     generics: &Generics<'t>,
-) -> &'t PathSeg<'t> {
+) -> EarlyBinder<&'t PathSeg<'t>> {
     let lower_args = |args: ast::GenArgs<'_>| {
         GenArgs(
             tcx.empty_tir
                 .arena
                 .alloc_slice_fill_iter(args.0.iter().map(|arg| match arg {
-                    ast::GenArg::Ty(ty) => GenArg::Ty(build_ty(ty, tcx, resolutions, generics)),
+                    ast::GenArg::Ty(ty) => {
+                        GenArg::Ty(build_ty(ty, tcx, resolutions, generics).skip_binder())
+                    }
                 })),
         )
     };
@@ -269,7 +284,7 @@ pub fn build_path_seg<'t>(
         Res::Def(DefKind::Field, _) => unreachable!("paths cant resolve to fields"),
         Res::Local(_) => panic!("no"),
     };
-    tcx.empty_tir.arena.alloc(seg)
+    EarlyBinder(tcx.empty_tir.arena.alloc(seg))
 }
 
 /// Not all ast items are present in Tir, if attempting to build tir for such an item kind
@@ -469,7 +484,7 @@ fn build_fn<'a, 't>(
         ret_ty: func
             .ret_ty
             .map(|ty| build_ty(ty, tir, resolutions, &generics))
-            .unwrap_or_else(|| &*tir.empty_tir.arena.alloc(Ty::Unit)),
+            .unwrap_or_else(|| EarlyBinder(&*tir.empty_tir.arena.alloc(Ty::Unit))),
         body: func.body.map(|expr| {
             tir.get_body_id(expr.id)
                 .expect("bodyids and tirids should have been pre generated before building tir")
@@ -542,12 +557,13 @@ fn build_impl<'a, 't>(
             }
         }
         let ast::PathSeg { args, .. } = impl_.of_trait.segments.last().unwrap();
-        let args =
-            GenArgs(tir.empty_tir.arena.alloc_slice_fill_iter(args.0.iter().map(
-                |arg| match arg {
-                    ast::GenArg::Ty(ty) => GenArg::Ty(build_ty(ty, tir, resolutions, generics)),
-                },
-            )));
+        let args = EarlyBinder(GenArgs(tir.empty_tir.arena.alloc_slice_fill_iter(
+            args.0.iter().map(|arg| match arg {
+                ast::GenArg::Ty(ty) => {
+                    GenArg::Ty(build_ty(ty, tir, resolutions, generics).skip_binder())
+                }
+            }),
+        )));
         let res = resolutions.get(&impl_.id).unwrap();
         match res {
             Res::Def(DefKind::Trait, id) => {

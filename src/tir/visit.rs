@@ -88,3 +88,98 @@ pub fn super_visit_impl<'t, V: Visitor<'t>>(v: &mut V, impl_: &Impl<'t>) {
         super_visit_assoc_item(v, assoc_item)
     }
 }
+
+//
+//
+
+pub trait TypeVisitor<'t> {
+    fn visit_ty(&mut self, ty: &'t Ty<'t>);
+}
+pub trait TypeFolder<'t> {
+    fn tcx(&self) -> &'t TirCtx<'t>;
+    fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t>;
+}
+
+pub trait TypeVisitable<'t>: Sized {
+    fn visit_with<V: TypeVisitor<'t>>(self, v: &mut V);
+}
+pub trait TypeSuperVisitable<'t>: TypeVisitable<'t> {
+    fn super_visit_with<V: TypeVisitor<'t>>(self, v: &mut V);
+}
+pub trait TypeFoldable<'t>: Sized {
+    fn fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self;
+}
+pub trait TypeSuperFoldable<'t>: TypeFoldable<'t> {
+    fn super_fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self;
+}
+
+impl<'t> TypeVisitable<'t> for &'t Ty<'t> {
+    fn visit_with<V: TypeVisitor<'t>>(self, v: &mut V) {
+        v.visit_ty(self);
+    }
+}
+impl<'t> TypeSuperVisitable<'t> for &'t Ty<'t> {
+    fn super_visit_with<V: TypeVisitor<'t>>(self, v: &mut V) {
+        match self {
+            Ty::Unit
+            | Ty::Infer(_)
+            | Ty::Bound(_, _)
+            | Ty::Placeholder(_, _)
+            | Ty::Int
+            | Ty::Float
+            | Ty::Error => (),
+            Ty::Adt(_, args) => args.visit_with(v),
+        }
+    }
+}
+impl<'t> TypeFoldable<'t> for &'t Ty<'t> {
+    fn fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
+        v.fold_ty(self)
+    }
+}
+impl<'t> TypeSuperFoldable<'t> for &'t Ty<'t> {
+    fn super_fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
+        match self {
+            Ty::Unit
+            | Ty::Infer(_)
+            | Ty::Bound(_, _)
+            | Ty::Placeholder(_, _)
+            | Ty::Int
+            | Ty::Float
+            | Ty::Error => self,
+            Ty::Adt(id, args) => v.tcx().arena.alloc(Ty::Adt(*id, args.fold_with(v))),
+        }
+    }
+}
+
+impl<'t> TypeVisitable<'t> for GenArgs<'t> {
+    fn visit_with<V: TypeVisitor<'t>>(self, v: &mut V) {
+        for arg in self.0 {
+            arg.visit_with(v);
+        }
+    }
+}
+impl<'t> TypeFoldable<'t> for GenArgs<'t> {
+    fn fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
+        GenArgs(
+            v.tcx()
+                .arena
+                .alloc_slice_fill_iter(self.0.iter().map(|&arg| arg.fold_with(v))),
+        )
+    }
+}
+
+impl<'t> TypeVisitable<'t> for GenArg<'t> {
+    fn visit_with<V: TypeVisitor<'t>>(self, v: &mut V) {
+        match self {
+            GenArg::Ty(ty) => v.visit_ty(ty),
+        }
+    }
+}
+impl<'t> TypeFoldable<'t> for GenArg<'t> {
+    fn fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
+        match self {
+            GenArg::Ty(ty) => GenArg::Ty(v.fold_ty(ty)),
+        }
+    }
+}

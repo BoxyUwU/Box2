@@ -62,14 +62,22 @@ pub fn typeck_fn<'ast, 't>(
     let mut infer_ctx = InferCtxt::new();
     let mut node_tys = HashMap::from_iter(body_src.params.iter().map(|(node_id, ty)| {
         let var = infer_ctx.new_var(Span::new(0..1));
-        infer_ctx.eq(Ty::Infer(var), **ty, Span::new(0..1));
+        infer_ctx.eq(
+            Ty::Infer(var),
+            *ty.instantiate_root_placeholders(tcx.tcx()),
+            Span::new(0..1),
+        );
         (*node_id, var)
     }));
 
     let ret_ty_span = Span::new(0..1);
     let var = infer_ctx.new_var(ret_ty_span);
     node_tys.insert(body_src.expr, var);
-    infer_ctx.eq(Ty::Infer(var), *body_src.ret, ret_ty_span);
+    infer_ctx.eq(
+        Ty::Infer(var),
+        *body_src.ret.instantiate_root_placeholders(tcx.tcx()),
+        ret_ty_span,
+    );
 
     typeck_expr(
         body,
@@ -264,6 +272,7 @@ pub fn typeck_expr<'ast, 't>(
             };
             let id = tcx.get_id(id).unwrap();
             let (_, args) = build_args_for_path(&path, tcx, resolutions, generics);
+            let args = args.instantiate_root_placeholders(tcx.tcx());
             infer_ctx.eq(Ty::Adt(id, args), Ty::Infer(node_tys[&this_expr.id]), span);
 
             let adt_generics = tcx.get_item(id).unwrap_adt().generics;
@@ -277,9 +286,9 @@ pub fn typeck_expr<'ast, 't>(
                 };
                 let field_def = ast.get(field_id).unwrap_field_def();
 
-                // FIXME: need to `field_ty.subst(args)`
                 // FIXME: it's silly to re-lower this ty instead of accessing it from tir
-                let field_ty = build_ty(field_def.ty, tcx, resolutions, adt_generics);
+                let field_ty = build_ty(field_def.ty, tcx, resolutions, adt_generics)
+                    .instantiate(args, tcx.tcx());
                 infer_ctx.eq(*field_ty, Ty::Infer(var), field_init.span);
                 typeck_expr(
                     field_init.expr,
