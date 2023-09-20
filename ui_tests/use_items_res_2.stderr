@@ -1,0 +1,36 @@
+error: Cycle when resolving use item Bar
+  ┌─ main.box:1:5
+  │
+1 │ use Foo = Bar;
+  │     ^^^
+  │     │
+  │     use item
+  │     which requires resolving this cyclic use item
+
+error: Cycle when resolving use item Baz
+  ┌─ main.box:2:5
+  │
+2 │ use Bar = Baz;
+  │     ^^^
+  │     │
+  │     use item
+  │     which requires resolving this cyclic use item
+
+error: Cycle when resolving use item Blah
+  ┌─ main.box:3:5
+  │
+3 │ use Baz = Blah;
+  │     ^^^
+  │     │
+  │     use item
+  │     which requires resolving this cyclic use item
+
+error: Cycle when resolving use item Foo
+  ┌─ main.box:4:5
+  │
+4 │ use Blah = Foo;
+  │     ^^^^
+  │     │
+  │     use item
+  │     which requires resolving this cyclic use item
+

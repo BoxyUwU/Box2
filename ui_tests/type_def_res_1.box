@@ -1,0 +1,33 @@
+type Foo {
+    field: type {},
+}
+
+type Other {
+    fffiiield: Foo::Field,
+}
+
+type EnumIguess {
+    | Blah { f: type {} }
+}
+
+mod my_module {
+    type MyTYyyyy {
+        inner: EnumIguess::Blah::F,
+    }
+
+    mod barrrr {
+        type TyTyTy {
+            ffield: type {}
+        }
+    }
+}
+
+type Whatever {
+    a: type {},
+    b: A,
+}
+
+fn foo() {
+    new Foo::Field {};
+    new my_module::barrrr::TyTyTy::Ffield {};
+}

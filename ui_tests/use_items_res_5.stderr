@@ -1,0 +1,17 @@
+error: Cycle when resolving use item Foo
+  ┌─ main.box:1:5
+  │
+1 │ use Foo;
+  │     ^^^
+  │     │
+  │     use item
+  │     which requires resolving this cyclic use item
+
+error: Cycle when resolving use item Foo
+  ┌─ main.box:2:5
+  │
+1 │ use Foo;
+  │     --- which requires resolving this cyclic use item
+2 │ use Foo;
+  │     ^^^ use item
+

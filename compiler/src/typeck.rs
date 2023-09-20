@@ -265,9 +265,11 @@ pub fn typeck_expr<'ast, 't>(
             field_inits,
             span,
         }) => {
-            let id = match resolutions[&this_expr.id] {
-                Res::Def(DefKind::Adt, id) => id,
-                Res::Def(DefKind::Variant, id) => ast.get_variants_adt(id).id,
+            let id = match resolutions.get(&this_expr.id) {
+                Some(Res::Def(DefKind::Adt, id)) => *id,
+                Some(Res::Def(DefKind::Variant, id)) => ast.get_variants_adt(*id).id,
+                // >!?!?!:<
+                None => return,
                 _ => unreachable!(),
             };
             let id = tcx.get_id(id).unwrap();
@@ -280,8 +282,10 @@ pub fn typeck_expr<'ast, 't>(
             for field_init in field_inits {
                 let var = infer_ctx.new_var(field_init.span);
                 node_tys.insert(field_init.expr.id, var);
-                let field_id = match resolutions[&field_init.id] {
-                    Res::Def(DefKind::Field, id) => id,
+                let field_id = match resolutions.get(&field_init.id) {
+                    Some(Res::Def(DefKind::Field, id)) => *id,
+                    // haha,,,, :,(
+                    None => return,
                     _ => unreachable!(),
                 };
                 let field_def = ast.get(field_id).unwrap_field_def();

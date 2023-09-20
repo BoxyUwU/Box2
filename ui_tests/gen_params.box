@@ -1,0 +1,17 @@
+trait Foo[T, U] {}
+
+type Blah[Z, X] { field: Z, other: X }
+
+impl[V] Foo[V, V] for Blah[V, V] {}
+
+fn my_func[AAA, BBB](a: AAA, b: BBB) -> BBB {
+    b
+}
+
+type MyT { }
+trait Other {
+    fn assoc_f[XXXX](a: XXXX);
+}
+impl Other for MyT {
+    fn assoc_f[XXXX](a: XXXX) {}
+}

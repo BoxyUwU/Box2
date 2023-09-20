@@ -1,0 +1,12 @@
+type Foo {
+    field: Bar,
+    other_field: type {},
+}
+
+type WithVariant {
+    | Blah { field: type Bar {} },
+    | Idk { field: OtherField },
+}
+
+use Foo::OtherField;
+use WithVariant::Blah::Bar;

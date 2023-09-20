@@ -1,0 +1,8 @@
+type Foo[T, U] { field: T, other_f: U }
+
+fn foo[W, X](w: W, x: X) -> Foo[W, X] {
+    new Foo[X, W] {
+        field: w,
+        other_f: x,
+    }
+}

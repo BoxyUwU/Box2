@@ -1,0 +1,5 @@
+mod foo {
+    type Foo {}
+}
+use foo::Foo = Bar;
+fn bar(arg: Bar) {}

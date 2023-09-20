@@ -1,0 +1,45 @@
+type FieldTy {}
+
+type Foo {
+    field: FieldTy,
+    fielddd: FieldTy,
+}
+
+type FooTwo {
+    | Bar {
+        field: FieldTy,
+    }
+}
+
+type Nested {
+    | Foo {
+        field: type {
+            | Baz {
+                inner: FieldTy
+            }
+        }
+    }
+}
+
+fn foo() {
+    new FieldTy {};
+
+    new Foo {
+        field: new FieldTy {},
+        fielddd: new FieldTy {},
+    };
+
+    new FooTwo::Bar {
+        field: new FieldTy {},
+    };
+
+    new Nested::Foo::Field::Baz {
+        inner: new FieldTy {},
+    };
+
+    new Nested::Foo {
+        field: new Nested::Foo::Field::Baz {
+            inner: new FieldTy {},
+        },
+    };
+}

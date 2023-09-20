@@ -1,0 +1,8 @@
+mod foo_one {
+    mod foo_two {
+        type Other {}
+    }
+    use foo_two::Other;
+}
+use foo_one::Other;
+fn uses_other(arg: Other) {}

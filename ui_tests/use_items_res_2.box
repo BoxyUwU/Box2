@@ -1,0 +1,4 @@
+use Foo = Bar;
+use Bar = Baz;
+use Baz = Blah;
+use Blah = Foo;

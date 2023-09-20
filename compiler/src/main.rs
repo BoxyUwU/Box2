@@ -1,7 +1,7 @@
 #![feature(type_alias_impl_trait)]
 #![feature(map_try_insert)]
 
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 

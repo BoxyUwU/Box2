@@ -1,0 +1,23 @@
+type FieldTy {}
+
+type Foo {
+    field: FieldTy,
+}
+
+type Bar {
+    | Baz { field: FieldTy }
+}
+
+fn foo() {
+    new Foo {
+        field_awd: new FieldTy {},
+    };
+
+    new Bar {
+        field: 10,
+    };
+
+    new Bar::Bazz {};
+
+    new Blah {};
+}
