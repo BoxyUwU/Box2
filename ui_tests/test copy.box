@@ -1,0 +1,12 @@
+type Foo[T, U] { field: T, other: U }
+
+type Last[Z] { blah: Z }
+
+fn qux[Z, Y](a: Foo[Z, Z], b: Foo[Y, Y]){}
+
+fn bar[V, W](a: V, b: V) -> Foo[Last[V], V] {
+    new Foo[Last[V], V] {
+        field: new Last { blah: a },
+        other: b,
+    }
+}

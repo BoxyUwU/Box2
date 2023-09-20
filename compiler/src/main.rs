@@ -1,7 +1,7 @@
 #![feature(type_alias_impl_trait)]
 #![feature(map_try_insert)]
 
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 
@@ -40,7 +40,7 @@ fn main() {
     let mut files = codespan_reporting::files::SimpleFiles::new();
     files.add("main.box", &code);
     let writer = codespan_reporting::term::termcolor::StandardStream::stderr(
-        codespan_reporting::term::termcolor::ColorChoice::Always,
+        codespan_reporting::term::termcolor::ColorChoice::Auto,
     );
     let config = codespan_reporting::term::Config::default();
 
