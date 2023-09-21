@@ -523,6 +523,7 @@ fn build_fn<'a, 't>(
 
     let tir_fn = tir::Fn {
         id,
+        name: tir.empty_tir.arena.alloc(func.name.to_string()),
         generics,
         params,
         ret_ty: func

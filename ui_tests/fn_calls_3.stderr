@@ -1,0 +1,6 @@
+error: mismatched types: a:Tub[] b:Bar[]
+   ┌─ main.box:11:9
+   │
+11 │     foo(new Tub {})
+   │         ^^^^^^^^^^
+

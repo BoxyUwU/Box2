@@ -1,0 +1,12 @@
+error: wrong number of fn args provided, expected 0 args, found 1 args
+  ┌─ main.box:7:5
+  │
+7 │     foo(new Extra {});
+  │     ^^^^^^^^^^^^^^^^^
+
+error: wrong number of fn args provided, expected 1 args, found 0 args
+  ┌─ main.box:8:5
+  │
+8 │     more_func();
+  │     ^^^^^^^^^^^
+

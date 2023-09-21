@@ -23,10 +23,10 @@ error: failed to resolve Blah
    │         ^^^^
 
 error: could not infer type
-   ┌─ main.box:22:5
+   ┌─ main.box:20:5
    │
-22 │     new Blah {};
-   │     ^^^^^^^^^^^
+20 │     new Bar::Bazz {};
+   │     ^^^^^^^^^^^^^^^^
 
 error: could not infer type
    ┌─ main.box:13:9
@@ -41,8 +41,8 @@ error: could not infer type
    │         ^^^^^
 
 error: could not infer type
-   ┌─ main.box:20:5
+   ┌─ main.box:22:5
    │
-20 │     new Bar::Bazz {};
-   │     ^^^^^^^^^^^^^^^^
+22 │     new Blah {};
+   │     ^^^^^^^^^^^
 

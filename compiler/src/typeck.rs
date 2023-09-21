@@ -1,5 +1,7 @@
 use std::{collections::HashMap, iter::FromIterator};
 
+use codespan_reporting::diagnostic::{Diagnostic, Label};
+
 use crate::{
     ast::{self, NodeId, Nodes},
     resolve::{DefKind, Res},
@@ -121,6 +123,21 @@ impl<'t> Ty<'t> {
         match self {
             Ty::Unit => "()".into(),
             Ty::Infer(inf) => format!("?{}", inf.0),
+            Ty::FnDef(id, args) => {
+                let mut pretty_args = String::new();
+                for arg in args.0 {
+                    if !pretty_args.is_empty() {
+                        pretty_args.push_str(", ");
+                    }
+
+                    match arg {
+                        GenArg::Ty(ty) => pretty_args.push_str(&ty.pretty(tcx)),
+                    }
+                }
+                let func = tcx.get_item(id).unwrap_fn();
+
+                format!("{}[{}]", func.name, pretty_args)
+            }
             Ty::Adt(id, args) => {
                 let mut pretty_args = String::new();
                 for arg in args.0 {
@@ -192,7 +209,6 @@ impl<'t> InferCtxt<'t> {
         let b = self.resolve_ty(b);
 
         match (a, b) {
-            // FIXME: type visitor
             (Ty::Error, _) | (_, Ty::Error) => return,
             (Ty::Infer(a), Ty::Infer(b)) => match a == b {
                 true => (),
@@ -208,12 +224,25 @@ impl<'t> InferCtxt<'t> {
                 self.constraints.try_insert(b, a).unwrap();
             }
             (
-                Ty::Placeholder(_, _) | Ty::Adt(_, _) | Ty::Float | Ty::Unit | Ty::Int,
-                Ty::Placeholder(_, _) | Ty::Int | Ty::Adt(_, _) | Ty::Float | Ty::Unit,
+                Ty::Placeholder(_, _) | Ty::Int | Ty::Float | Ty::Unit,
+                Ty::Placeholder(_, _) | Ty::Int | Ty::Float | Ty::Unit,
             ) => match a == b {
                 true => (),
                 false => self.errors.push(ExpectedFound(a, b, span)),
             },
+            (
+                Ty::FnDef(a_id, a_args) | Ty::Adt(a_id, a_args),
+                Ty::FnDef(b_id, b_args) | Ty::Adt(b_id, b_args),
+            ) if a_id == b_id => {
+                for (a_arg, b_arg) in a_args.0.iter().zip(b_args.0.iter()) {
+                    let GenArg::Ty(a_arg) = a_arg;
+                    let GenArg::Ty(b_arg) = b_arg;
+                    self.eq(**a_arg, **b_arg, span);
+                }
+            }
+            (Ty::FnDef(_, _) | Ty::Adt(_, _), _) | (_, Ty::FnDef(_, _) | Ty::Adt(_, _)) => {
+                self.errors.push(ExpectedFound(a, b, span))
+            }
             (Ty::Bound(_, _), _) | (_, Ty::Bound(_, _)) => unreachable!(),
         }
     }
@@ -305,9 +334,15 @@ pub fn typeck_expr<'ast, 't>(
                 );
             }
         }
-        ast::ExprKind::Path(ast::Path { span, .. }) => {
+        ast::ExprKind::Path(path @ ast::Path { span, .. }) => {
             let res_ty = match resolutions[&this_expr.id] {
                 Res::Local(id) => Ty::Infer(node_tys[&id]),
+                Res::Def(DefKind::Func, _) => {
+                    let (id, args) =
+                        building::build_args_for_path(&path, tcx, resolutions, generics);
+                    let args = args.instantiate_root_placeholders(tcx.tcx());
+                    Ty::FnDef(id, args)
+                }
                 _ => todo!(),
             };
             infer_ctx.eq(res_ty, Ty::Infer(node_tys[&this_expr.id]), span);
@@ -321,8 +356,71 @@ pub fn typeck_expr<'ast, 't>(
 
         ast::ExprKind::BinOp(_, _, _, _) => todo!(),
         ast::ExprKind::UnOp(_, _, _) => todo!(),
-        ast::ExprKind::FnCall(_) => todo!(),
+        ast::ExprKind::FnCall(ast::FnCall { func, args, span }) => {
+            let rcvr_id = infer_ctx.new_var(func.span());
+            node_tys.insert(func.id, rcvr_id);
+            typeck_expr(func, ast, tcx, resolutions, infer_ctx, node_tys, generics);
+
+            let rcvr = infer_ctx.resolve_ty(Ty::Infer(rcvr_id));
+            if let Ty::FnDef(id, fndef_args) = rcvr {
+                let func = tcx.get_item(id).unwrap_fn();
+                infer_ctx.eq(
+                    *func.ret_ty.instantiate(fndef_args, tcx.tcx()),
+                    Ty::Infer(node_tys[&this_expr.id]),
+                    span,
+                );
+
+                if func.params.len() != args.len() {
+                    let err = diag_wrong_number_fn_args(func.params, args, span);
+                    tcx.tcx().err(err);
+                }
+
+                for (param, arg) in func.params.iter().zip(args.iter()) {
+                    let id = infer_ctx.new_var(arg.span());
+                    node_tys.insert(arg.id, id);
+                    infer_ctx.eq(
+                        Ty::Infer(id),
+                        *param.ty.instantiate(fndef_args, tcx.tcx()),
+                        arg.span(),
+                    );
+                    typeck_expr(arg, ast, tcx, resolutions, infer_ctx, node_tys, generics);
+                }
+            } else {
+                let err = diag_fn_call_on_non_fn(tcx.tcx(), rcvr, func.span());
+                tcx.tcx().err(err);
+                infer_ctx.eq(Ty::Error, Ty::Infer(node_tys[&this_expr.id]), span);
+            }
+        }
 
         ast::ExprKind::FieldInit(_) => unreachable!(),
     }
+}
+
+fn diag_wrong_number_fn_args(
+    params: &[Param<'_>],
+    args: &[&ast::Expr<'_>],
+    span: Span,
+) -> Diagnostic<usize> {
+    assert!(params.len() != args.len());
+
+    Diagnostic::error()
+        .with_message(format!(
+            "wrong number of fn args provided, expected {} args, found {} args",
+            params.len(),
+            args.len()
+        ))
+        .with_labels(vec![Label::primary(0, span)])
+}
+
+fn diag_fn_call_on_non_fn<'t>(
+    tcx: &'t TirCtx<'t>,
+    actual_ty: Ty<'t>,
+    span: Span,
+) -> Diagnostic<usize> {
+    Diagnostic::error()
+        .with_message(format!(
+            "cannot call non-function type: {}",
+            actual_ty.pretty(tcx)
+        ))
+        .with_labels(vec![Label::primary(0, span)])
 }

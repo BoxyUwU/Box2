@@ -1,0 +1,5 @@
+type Bart {}
+
+fn bar() {
+    (new Bart {})()
+}

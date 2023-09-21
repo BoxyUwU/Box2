@@ -92,6 +92,7 @@ impl<T> EarlyBinder<T> {
                 match ty {
                     Ty::Unit
                     | Ty::Infer(_)
+                    | Ty::FnDef(_, _)
                     | Ty::Adt(_, _)
                     | Ty::Placeholder(_, _)
                     | Ty::Int
@@ -122,6 +123,7 @@ impl<T> EarlyBinder<T> {
                 match ty {
                     Ty::Unit
                     | Ty::Infer(_)
+                    | Ty::FnDef(_, _)
                     | Ty::Adt(_, _)
                     | Ty::Placeholder(_, _)
                     | Ty::Int
@@ -146,6 +148,7 @@ impl<T> EarlyBinder<T> {
 pub enum Ty<'t> {
     Unit,
     Infer(InferId),
+    FnDef(TirId, GenArgs<'t>),
     Adt(TirId, GenArgs<'t>),
     Bound(DebruijnIndex, BoundVar),
     Placeholder(Universe, BoundVar),
@@ -266,11 +269,19 @@ impl<'t> Item<'t> {
             _ => panic!("item was not an adt: {:?}", self),
         }
     }
+
+    pub fn unwrap_fn(&self) -> &Fn<'t> {
+        match self {
+            Item::Fn(func) => func,
+            _ => panic!("item was not a func: {:?}", self),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct Fn<'t> {
     pub id: TirId,
+    pub name: &'t str,
     pub params: &'t [Param<'t>],
     pub ret_ty: EarlyBinder<&'t Ty<'t>>,
     pub generics: &'t Generics<'t>,

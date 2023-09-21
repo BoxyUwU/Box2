@@ -1,0 +1,10 @@
+type Foo {}
+type Bar {}
+
+fn foo() -> Foo {
+    new Foo {}
+}
+
+fn bar() -> Bar {
+    foo()
+}

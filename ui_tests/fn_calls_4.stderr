@@ -1,0 +1,6 @@
+error: cannot call non-function type: Bart[]
+  ┌─ main.box:4:6
+  │
+4 │     (new Bart {})()
+  │      ^^^^^^^^^^^
+

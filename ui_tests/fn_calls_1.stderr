@@ -1,0 +1,9 @@
+error: mismatched types: a:Foo[] b:Bar[]
+   ┌─ main.box:8:17
+   │  
+ 8 │   fn bar() -> Bar {
+   │ ╭─────────────────^
+ 9 │ │     foo()
+10 │ │ }
+   │ ╰─^
+

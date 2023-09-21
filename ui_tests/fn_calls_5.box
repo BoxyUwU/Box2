@@ -1,0 +1,10 @@
+fn foo() {}
+fn more_func(a: Extra) {}
+
+type Extra {}
+
+fn bar() {
+    foo(new Extra {});
+    more_func();
+}
+

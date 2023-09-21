@@ -10,7 +10,19 @@ error: mismatched types: a:!0_1 b:!0_0
 6 │         other_f: x,
   │                  ^
 
-error: mismatched types: a:Foo[!0_1, !0_0] b:Foo[!0_0, !0_1]
+error: mismatched types: a:!0_1 b:!0_0
+  ┌─ main.box:3:39
+  │  
+3 │   fn foo[W, X](w: W, x: X) -> Foo[W, X] {
+  │ ╭───────────────────────────────────────^
+4 │ │     new Foo[X, W] {
+5 │ │         field: w,
+6 │ │         other_f: x,
+7 │ │     }
+8 │ │ }
+  │ ╰─^
+
+error: mismatched types: a:!0_0 b:!0_1
   ┌─ main.box:3:39
   │  
 3 │   fn foo[W, X](w: W, x: X) -> Foo[W, X] {
