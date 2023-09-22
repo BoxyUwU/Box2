@@ -253,13 +253,3 @@ impl<'a> Iterator for Tokenizer<'a> {
         self.lex.next()
     }
 }
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn foo() {
-        dbg!(Tokenizer::new("1 + 2 + 133.21 / 3 - hello (foo)").collect::<Vec<_>>());
-    }
-}
