@@ -1,0 +1,6 @@
+error: mismatched types: a:Awk[] b:Blah[]
+  ┌─ main.box:9:15
+  │
+9 │     foo[Blah](new Awk {});
+  │               ^^^^^^^^^^
+

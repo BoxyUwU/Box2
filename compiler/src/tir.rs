@@ -68,7 +68,7 @@ pub struct BoundVar(pub u32);
 pub struct Universe(pub u32);
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct DebruijnIndex(pub u32);
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Ord, PartialOrd)]
 pub struct InferId(pub usize);
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]

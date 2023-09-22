@@ -1,0 +1,6 @@
+error: expected {
+  ┌─ main.box:5:19
+  │
+5 │ impl[V] Foo[V, V] for Blah[V, V] {}
+  │                   ^^^ found for
+

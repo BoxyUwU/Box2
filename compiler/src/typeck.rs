@@ -91,9 +91,12 @@ pub fn typeck_fn<'ast, 't>(
         generics,
     );
     let infcx_errs = std::mem::take(&mut infer_ctx.errors);
+    let mut node_tys = node_tys.into_iter().collect::<Vec<_>>();
+    node_tys.sort_by(|(_, a), (_, b)| InferId::cmp(a, b));
+
     node_tys
-        .iter()
-        .map(|(&id, ty)| (id, infer_ctx.resolve_ty(Ty::Infer(*ty))))
+        .into_iter()
+        .map(|(id, ty)| (id, infer_ctx.resolve_ty(Ty::Infer(ty))))
         .fold(
             TypeckResults {
                 tys: HashMap::default(),

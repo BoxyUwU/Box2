@@ -1,0 +1,12 @@
+error: could not infer type
+  ┌─ main.box:9:5
+  │
+9 │     foo(new Awk {});
+  │     ^^^^^^^^^^^^^^^
+
+error: unexpected amount of generic args provided
+  ┌─ main.box:9:5
+  │
+9 │     foo(new Awk {});
+  │     ^^^ Expected 1 args
+
