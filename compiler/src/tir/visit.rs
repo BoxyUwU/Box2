@@ -35,6 +35,8 @@ pub fn super_visit_item<'t, V: Visitor<'t>>(v: &mut V, item: &Item<'t>) {
     match item {
         Item::Mod(m) => v.visit_mod(m),
         Item::Adt(t) => v.visit_type_def(t),
+        Item::Variant(vrnt) => v.visit_variant_def(vrnt),
+        Item::Field(f) => v.visit_field_def(f),
         Item::TyAlias(t) => v.visit_type_alias(t),
         Item::Fn(f) => v.visit_fn(f),
         Item::Trait(t) => v.visit_trait(t),
@@ -50,17 +52,17 @@ pub fn super_visit_mod<'t, V: Visitor<'t>>(v: &mut V, module: &Mod<'t>) {
 
 pub fn super_visit_type_def<'t, V: Visitor<'t>>(v: &mut V, def: &Adt<'t>) {
     for variant in def.variants {
-        super_visit_variant_def(v, variant);
+        v.visit_variant_def(variant);
     }
 }
 
 pub fn super_visit_variant_def<'t, V: Visitor<'t>>(v: &mut V, def: &Variant<'t>) {
     for field in def.fields {
-        super_visit_field_def(v, field);
+        v.visit_field_def(field);
     }
 
     for ty in def.adts {
-        super_visit_type_def(v, ty);
+        v.visit_type_def(ty);
     }
 }
 

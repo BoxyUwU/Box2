@@ -211,7 +211,13 @@ pub fn build<'a, 't>(
                     func.ret_ty,
                 ),
 
-                Item::Mod(_) | Item::Adt(_) | Item::TyAlias(_) | Item::Trait(_) | Item::Impl(_) => {
+                Item::Variant(_)
+                | Item::Field(_)
+                | Item::Mod(_)
+                | Item::Adt(_)
+                | Item::TyAlias(_)
+                | Item::Trait(_)
+                | Item::Impl(_) => {
                     unreachable!()
                 }
             };
@@ -440,36 +446,57 @@ pub fn build_adt_def<'a, 't>(
 
     let generics = tir.get_generics(id);
 
-    let variants = adt.variants.iter().map(|variant| {
-        let variant_id = tir.get_id(variant.id).unwrap();
+    let variants = adt
+        .variants
+        .iter()
+        .map(|variant| {
+            let variant_id = tir.get_id(variant.id).unwrap();
 
-        let adts = variant
-            .type_defs
-            .iter()
-            .map(|type_def| *build_adt_def(ast, type_def, resolutions, tir));
-        let adts = tir.empty_tir.arena.alloc_slice_fill_iter(adts);
+            let adts = variant
+                .type_defs
+                .iter()
+                .map(|type_def| build_adt_def(ast, type_def, resolutions, tir));
+            let adts = tir.empty_tir.arena.alloc_slice_fill_iter(adts);
 
-        let fields = variant.field_defs.iter().map(|field_def| {
-            let field_id = tir.get_id(field_def.id).unwrap();
-            tir::Field {
-                id: field_id,
-                name: tir.empty_tir.arena.alloc(field_def.name.to_string()),
-                ty: build_ty(field_def.ty, tir, resolutions, &generics),
+            let fields = variant
+                .field_defs
+                .iter()
+                .map(|field_def| {
+                    let field_id = tir.get_id(field_def.id).unwrap();
+                    let field = tir::Field {
+                        id: field_id,
+                        name: tir.empty_tir.arena.alloc(field_def.name.to_string()),
+                        ty: build_ty(field_def.ty, tir, resolutions, &generics),
+                    };
+                    &*tir.empty_tir.arena.alloc(Item::Field(field))
+                })
+                .collect::<Vec<_>>();
+            for f in fields.iter() {
+                tir.register_item(f.unwrap_field().id, f);
             }
-        });
-        let fields = tir.empty_tir.arena.alloc_slice_fill_iter(fields);
+            let fields = tir
+                .empty_tir
+                .arena
+                .alloc_slice_fill_iter(fields.into_iter().map(|item| item.unwrap_field()));
 
-        let variant = tir::Variant {
-            id: variant_id,
-            name: variant
-                .name
-                .map(|name| tir.empty_tir.arena.alloc(name.to_string()).as_str()),
-            adts,
-            fields,
-        };
-        *tir.empty_tir.arena.alloc(variant)
-    });
-    let variants = tir.empty_tir.arena.alloc_slice_fill_iter(variants);
+            let variant = tir::Variant {
+                id: variant_id,
+                name: variant
+                    .name
+                    .map(|name| tir.empty_tir.arena.alloc(name.to_string()).as_str()),
+                adts,
+                fields,
+            };
+            &*tir.empty_tir.arena.alloc(Item::Variant(variant))
+        })
+        .collect::<Vec<_>>();
+    for v in variants.iter() {
+        tir.register_item(v.unwrap_variant().id, v);
+    }
+    let variants = &*tir
+        .empty_tir
+        .arena
+        .alloc_slice_fill_iter(variants.into_iter().map(|item| item.unwrap_variant()));
 
     let tir_adt = tir::Adt {
         id,

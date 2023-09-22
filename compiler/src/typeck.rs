@@ -6,7 +6,7 @@ use crate::{
     ast::{self, NodeId, Nodes},
     resolve::{DefKind, Res},
     tir::{
-        building::{build_args_for_path, build_ty, TirBuilder},
+        building::{build_args_for_path, TirBuilder},
         *,
     },
     tokenize::{Literal, Span},
@@ -306,8 +306,6 @@ pub fn typeck_expr<'ast, 't>(
             let args = args.instantiate_root_placeholders(tcx.tcx());
             infer_ctx.eq(Ty::Adt(id, args), Ty::Infer(node_tys[&this_expr.id]), span);
 
-            let adt_generics = tcx.get_item(id).unwrap_adt().generics;
-
             for field_init in field_inits {
                 let var = infer_ctx.new_var(field_init.span);
                 node_tys.insert(field_init.expr.id, var);
@@ -317,11 +315,8 @@ pub fn typeck_expr<'ast, 't>(
                     None => return,
                     _ => unreachable!(),
                 };
-                let field_def = ast.get(field_id).unwrap_field_def();
-
-                // FIXME: it's silly to re-lower this ty instead of accessing it from tir
-                let field_ty = build_ty(field_def.ty, tcx, resolutions, adt_generics)
-                    .instantiate(args, tcx.tcx());
+                let field_def = tcx.get_item(tcx.get_id(field_id).unwrap()).unwrap_field();
+                let field_ty = field_def.ty.instantiate(args, tcx.tcx());
                 infer_ctx.eq(*field_ty, Ty::Infer(var), field_init.span);
                 typeck_expr(
                     field_init.expr,

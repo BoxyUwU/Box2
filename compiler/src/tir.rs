@@ -258,6 +258,8 @@ pub enum Item<'t> {
     Mod(Mod<'t>),
     Fn(Fn<'t>),
     Adt(Adt<'t>),
+    Variant(Variant<'t>),
+    Field(Field<'t>),
     TyAlias(TyAlias<'t>),
     Trait(Trait<'t>),
     Impl(Impl<'t>),
@@ -267,6 +269,20 @@ impl<'t> Item<'t> {
         match self {
             Item::Adt(adt) => adt,
             _ => panic!("item was not an adt: {:?}", self),
+        }
+    }
+
+    pub fn unwrap_variant(&self) -> &Variant<'t> {
+        match self {
+            Item::Variant(v) => v,
+            _ => panic!("Item was not a variant: {:?}", self),
+        }
+    }
+
+    pub fn unwrap_field(&self) -> &Field<'t> {
+        match self {
+            Item::Field(f) => f,
+            _ => panic!("Item was not a field: {:?}", self),
         }
     }
 
@@ -293,15 +309,15 @@ pub struct Adt<'t> {
     pub id: TirId,
     pub name: &'t str,
     pub generics: &'t Generics<'t>,
-    pub variants: &'t [Variant<'t>],
+    pub variants: &'t [&'t Variant<'t>],
 }
 
 #[derive(Debug, Copy, Clone)]
 pub struct Variant<'t> {
     pub id: TirId,
     pub name: Option<&'t str>,
-    pub adts: &'t [Adt<'t>],
-    pub fields: &'t [Field<'t>],
+    pub adts: &'t [&'t Adt<'t>],
+    pub fields: &'t [&'t Field<'t>],
 }
 
 #[derive(Debug, Copy, Clone)]
