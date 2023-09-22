@@ -158,14 +158,12 @@ impl<'ast> Resolver<'ast> {
             id,
             span: _,
             of_trait,
-            self_ty,
             generics,
             assoc_items,
         } = impl_;
 
         self.with_rib(Rib::from_generics(&generics), |this| {
             let _ = this.resolve_path(None, *id, of_trait);
-            this.resolve_ty(self_ty);
             for assoc_item in *assoc_items {
                 this.resolve_associated_item(assoc_item);
             }

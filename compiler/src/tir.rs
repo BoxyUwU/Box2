@@ -347,7 +347,6 @@ pub struct Trait<'t> {
 pub struct Impl<'t> {
     pub id: TirId,
     pub of_trait: (TirId, EarlyBinder<GenArgs<'t>>),
-    pub self_ty: EarlyBinder<&'t Ty<'t>>,
     pub generics: &'t Generics<'t>,
     pub assoc_items: &'t [AssocItem<'t>],
 }

@@ -432,7 +432,6 @@ pub struct Impl<'a> {
     pub span: Span,
 
     pub of_trait: Path<'a>,
-    pub self_ty: &'a Ty<'a>,
 
     pub generics: Generics<'a>,
 

@@ -643,7 +643,6 @@ fn build_impl<'a, 't>(
     let tir_impl = tir::Impl {
         id,
         of_trait,
-        self_ty: build_ty(impl_.self_ty, tir, resolutions, generics),
         generics,
         assoc_items,
     };

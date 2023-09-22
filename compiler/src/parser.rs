@@ -928,11 +928,6 @@ pub fn parse_impl<'a>(
 
     let of_trait = parse_path(tok, nodes)?;
 
-    tok.next_if(Token::Kw(Kw::For))
-        .map_err(|(found, span)| diag_expected_found("for", found, span))?;
-
-    let self_ty = parse_ty(tok, nodes)?;
-
     tok.next_if(Token::LBrace)
         .map_err(|(tok, sp)| diag_expected_found("{", tok, sp))?;
 
@@ -971,7 +966,6 @@ pub fn parse_impl<'a>(
         id,
         span,
         of_trait,
-        self_ty,
         generics,
         assoc_items: nodes.arena.alloc_slice_fill_iter(items),
     }))
@@ -995,12 +989,12 @@ mod test {
     fn trait_and_impls() {
         let nodes = Nodes::new();
         let valid_code = [
-            "impl Trait for u32 { }",
-            "impl Trait for u32 { 
+            "impl Trait[u32] { }",
+            "impl Trait[u32] { 
                 pub fn bar();
                 type X;
             }",
-            "impl Trait for u32 {
+            "impl Trait[u32] {
                 pub fn bar() -> u64 {
                     1 + 1
                 }
