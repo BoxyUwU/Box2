@@ -207,8 +207,14 @@ pub enum Visibility {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Ty<'a> {
     pub id: NodeId,
-    pub path: Path<'a>,
+    pub kind: TyKind<'a>,
     pub span: Span,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum TyKind<'a> {
+    Path(Path<'a>),
+    Infer,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]

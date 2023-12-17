@@ -133,6 +133,7 @@ impl<'a> Token<'a> {
                 Token::Plus => "+",
                 Token::Hyphen => "-",
                 Token::Star => "*",
+                Token::QuestionMark => "?",
                 Token::FwdSlash => "/",
                 Token::UpLine => "|",
                 Token::Arrow => "->",
@@ -680,7 +681,7 @@ fn parse_fields<'a>(
 
                 nodes.push_ty(|id| Ty {
                     id,
-                    path: Path {
+                    kind: TyKind::Path(Path {
                         segments: nodes
                             .arena
                             .alloc_slice_fill_iter([nodes.push_path_seg(|id| PathSeg {
@@ -691,7 +692,7 @@ fn parse_fields<'a>(
                                 id,
                             })]),
                         span: ty_def.name_span,
-                    },
+                    }),
                     span: ty_def.name_span,
                 })
             }
@@ -844,12 +845,17 @@ pub fn parse_ty<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
 ) -> Result<&'a Ty<'a>, Diagnostic<usize>> {
-    let path = parse_path(tok, nodes)?;
+    let (kind, span) = if let Ok((_, span)) = tok.next_if(Token::QuestionMark) {
+        (TyKind::Infer, span)
+    } else {
+        let path = parse_path(tok, nodes)?;
+        (TyKind::Path(path), path.span)
+    };
 
     Ok(nodes.push_ty(|id| Ty {
         id,
-        path,
-        span: path.span,
+        kind,
+        span,
     }))
 }
 

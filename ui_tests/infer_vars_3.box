@@ -1,0 +1,9 @@
+fn foo[T](a: T) -> T {
+    a
+}
+
+type Awk {}
+
+fn bar() -> ? {
+    foo[Awk](new Awk {})
+}

@@ -224,7 +224,12 @@ impl<'ast> Resolver<'ast> {
     }
 
     fn resolve_ty(&mut self, ty: &Ty) {
-        let _ = self.resolve_path(None, ty.id, &ty.path);
+        match ty.kind {
+            TyKind::Path(path) => {
+                let _ = self.resolve_path(None, ty.id, &path);
+            }
+            TyKind::Infer => (),
+        }
     }
 
     fn resolve_fn(&mut self, func: &Fn) {

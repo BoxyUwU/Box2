@@ -79,6 +79,9 @@ pub enum Token<'a> {
     #[token(".")]
     Dot,
 
+    #[token("?")]
+    QuestionMark,
+
     #[token("mod", |_| Kw::Mod)]
     #[token("let", |_| Kw::Let)]
     #[token("fn", |_| Kw::Fn)]

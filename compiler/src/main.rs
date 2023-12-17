@@ -59,7 +59,7 @@ fn main() {
     }
 
     let tir_ctx = tir::TirCtx::new();
-    let (tir, ref body_sources, builder) =
+    let (tir, ref body_sources, tir_ctx, lowered_ids) =
         tir::building::build(&nodes, root_mod.id, &resolver.resolutions, &tir_ctx);
 
     let mut checker = typeck::FnChecker {
@@ -67,7 +67,9 @@ fn main() {
         resolutions: &resolver.resolutions,
         typeck_results: HashMap::new(),
         body_sources,
-        tcx: &builder,
+
+        lowered_ids,
+        tir_ctx,
     };
     tir::visit::super_visit_mod(&mut checker, tir);
 

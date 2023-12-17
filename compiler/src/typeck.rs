@@ -6,7 +6,7 @@ use crate::{
     ast::{self, NodeId, Nodes},
     resolve::{DefKind, Res},
     tir::{
-        building::{build_args_for_path, TirBuilder},
+        building::{build_args_for_path, BodyTirBuilder, TirBuilder},
         *,
     },
     tokenize::{Literal, Span},
@@ -21,17 +21,34 @@ pub struct FnChecker<'ast, 'm, 't> {
     pub ast: &'ast ast::Nodes<'ast>,
     pub resolutions: &'m HashMap<NodeId, Res<NodeId>>,
     pub body_sources: &'m HashMap<BodyId, BodySource<'t>>,
+    pub lowered_ids: HashMap<NodeId, TirId>,
 
-    pub tcx: &'m TirBuilder<'t>,
     pub typeck_results: HashMap<TirId, TypeckResults<'t>>,
+
+    pub tir_ctx: &'t TirCtx<'t>,
 }
 
 impl<'ast, 'm, 't> visit::Visitor<'t> for FnChecker<'ast, 'm, 't> {
     fn visit_fn(&mut self, f: &Fn<'t>) {
         visit::super_visit_fn(self, f);
 
-        let r = typeck_fn(f, self.tcx, &self.body_sources, self.ast, self.resolutions);
+        let mut body_tir_ctx = BodyTirBuilder {
+            partial_tir: self.tir_ctx,
+            lowered_ids: std::mem::take(&mut self.lowered_ids),
+            infcx: InferCtxt::new(),
+        };
+        let r = typeck_fn(
+            f,
+            &mut body_tir_ctx,
+            &self.body_sources,
+            self.ast,
+            self.resolutions,
+        );
         self.typeck_results.insert(f.id, r);
+        drop(std::mem::replace(
+            &mut self.lowered_ids,
+            body_tir_ctx.lowered_ids,
+        ));
     }
 }
 
@@ -41,7 +58,7 @@ pub enum TypeckError<'t> {
 }
 pub fn typeck_fn<'ast, 't>(
     Fn { body, generics, .. }: &'_ Fn<'t>,
-    tcx: &TirBuilder<'t>,
+    tcx: &mut BodyTirBuilder<'t>,
     body_sources: &HashMap<BodyId, BodySource<'t>>,
     ast: &'ast Nodes<'ast>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
@@ -61,42 +78,33 @@ pub fn typeck_fn<'ast, 't>(
 
     let body = ast.get(body_src.expr).unwrap_expr();
 
-    let mut infer_ctx = InferCtxt::new();
     let mut node_tys = HashMap::from_iter(body_src.params.iter().map(|(node_id, ty)| {
-        let var = infer_ctx.new_var(Span::new(0..1));
-        infer_ctx.eq(
+        let var = tcx.infcx.new_var(Span::new(0..1));
+        tcx.infcx.eq(
             Ty::Infer(var),
-            *ty.instantiate_root_placeholders(tcx.tcx()),
+            *ty.instantiate_root_placeholders(tcx.partial_tir),
             Span::new(0..1),
         );
         (*node_id, var)
     }));
 
     let ret_ty_span = Span::new(0..1);
-    let var = infer_ctx.new_var(ret_ty_span);
+    let var = tcx.infcx.new_var(ret_ty_span);
     node_tys.insert(body_src.expr, var);
-    infer_ctx.eq(
+    tcx.infcx.eq(
         Ty::Infer(var),
-        *body_src.ret.instantiate_root_placeholders(tcx.tcx()),
+        *body_src.ret.instantiate_root_placeholders(tcx.partial_tir),
         ret_ty_span,
     );
 
-    typeck_expr(
-        body,
-        ast,
-        tcx,
-        resolutions,
-        &mut infer_ctx,
-        &mut node_tys,
-        generics,
-    );
-    let infcx_errs = std::mem::take(&mut infer_ctx.errors);
+    typeck_expr(body, ast, tcx, resolutions, &mut node_tys, generics);
+    let infcx_errs = std::mem::take(&mut tcx.infcx.errors);
     let mut node_tys = node_tys.into_iter().collect::<Vec<_>>();
     node_tys.sort_by(|(_, a), (_, b)| InferId::cmp(a, b));
 
     node_tys
         .into_iter()
-        .map(|(id, ty)| (id, infer_ctx.resolve_ty(Ty::Infer(ty))))
+        .map(|(id, ty)| (id, tcx.infcx.resolve_ty(Ty::Infer(ty))))
         .fold(
             TypeckResults {
                 tys: HashMap::default(),
@@ -110,7 +118,7 @@ pub fn typeck_fn<'ast, 't>(
                     Ty::Infer(infer_id) => errs.push(TypeckError::UnconstrainedInfer(
                         id,
                         infer_id,
-                        infer_ctx.infer_spans[&infer_id],
+                        tcx.infcx.infer_spans[&infer_id],
                     )),
                     _ => {
                         tys.insert(id, ty);
@@ -185,7 +193,7 @@ impl<'t> InferCtxt<'t> {
         }
     }
 
-    fn new_var(&mut self, span: Span) -> InferId {
+    pub fn new_var(&mut self, span: Span) -> InferId {
         let id = self.next_infer_id;
         self.infer_spans.insert(id, span);
         self.next_infer_id.0 += 1;
@@ -254,42 +262,44 @@ impl<'t> InferCtxt<'t> {
 pub fn typeck_expr<'ast, 't>(
     this_expr: &ast::Expr<'_>,
     ast: &'ast Nodes<'ast>,
-    tcx: &TirBuilder<'t>,
+    tcx: &mut BodyTirBuilder<'t>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
-    infer_ctx: &mut InferCtxt<'t>,
     node_tys: &mut HashMap<NodeId, InferId>,
     generics: &Generics<'t>,
 ) {
     match this_expr.kind {
         ast::ExprKind::Let(binding, rhs, span) => {
-            infer_ctx.eq(Ty::Infer(node_tys[&this_expr.id]), Ty::Unit, span);
+            tcx.infcx
+                .eq(Ty::Infer(node_tys[&this_expr.id]), Ty::Unit, span);
 
-            let pat_var = infer_ctx.new_var(binding.span);
+            let pat_var = tcx.infcx.new_var(binding.span);
             node_tys.insert(binding.id, pat_var);
-            let rhs_var = infer_ctx.new_var(rhs.span());
+            let rhs_var = tcx.infcx.new_var(rhs.span());
             node_tys.insert(rhs.id, rhs_var);
-            infer_ctx.eq(Ty::Infer(pat_var), Ty::Infer(rhs_var), span);
-            typeck_expr(rhs, ast, tcx, resolutions, infer_ctx, node_tys, generics);
+            tcx.infcx.eq(Ty::Infer(pat_var), Ty::Infer(rhs_var), span);
+            typeck_expr(rhs, ast, tcx, resolutions, node_tys, generics);
         }
         ast::ExprKind::Block(stmts, block_span) => {
             // fixme  block layout is fucky
             for (expr, _) in stmts {
-                let var = infer_ctx.new_var(expr.span());
+                let var = tcx.infcx.new_var(expr.span());
                 node_tys.insert(expr.id, var);
-                typeck_expr(expr, ast, tcx, resolutions, infer_ctx, node_tys, generics);
+                typeck_expr(expr, ast, tcx, resolutions, node_tys, generics);
             }
 
             match stmts.last() {
                 Some((expr, false)) => {
                     let var = node_tys[&expr.id];
-                    infer_ctx.eq(
+                    tcx.infcx.eq(
                         Ty::Infer(var),
                         Ty::Infer(node_tys[&this_expr.id]),
                         block_span,
                     );
                     // FIXME add `Stmt`/`StmtKind`
                 }
-                _ => infer_ctx.eq(Ty::Infer(node_tys[&this_expr.id]), Ty::Unit, block_span),
+                _ => tcx
+                    .infcx
+                    .eq(Ty::Infer(node_tys[&this_expr.id]), Ty::Unit, block_span),
             }
         }
         ast::ExprKind::TypeInit(ast::TypeInit {
@@ -306,11 +316,12 @@ pub fn typeck_expr<'ast, 't>(
             };
             let id = tcx.get_id(id).unwrap();
             let (_, args) = build_args_for_path(&path, tcx, resolutions, generics);
-            let args = args.instantiate_root_placeholders(tcx.tcx());
-            infer_ctx.eq(Ty::Adt(id, args), Ty::Infer(node_tys[&this_expr.id]), span);
+            let args = args.instantiate_root_placeholders(tcx.partial_tir);
+            tcx.infcx
+                .eq(Ty::Adt(id, args), Ty::Infer(node_tys[&this_expr.id]), span);
 
             for field_init in field_inits {
-                let var = infer_ctx.new_var(field_init.span);
+                let var = tcx.infcx.new_var(field_init.span);
                 node_tys.insert(field_init.expr.id, var);
                 let field_id = match resolutions.get(&field_init.id) {
                     Some(Res::Def(DefKind::Field, id)) => *id,
@@ -319,17 +330,9 @@ pub fn typeck_expr<'ast, 't>(
                     _ => unreachable!(),
                 };
                 let field_def = tcx.get_item(tcx.get_id(field_id).unwrap()).unwrap_field();
-                let field_ty = field_def.ty.instantiate(args, tcx.tcx());
-                infer_ctx.eq(*field_ty, Ty::Infer(var), field_init.span);
-                typeck_expr(
-                    field_init.expr,
-                    ast,
-                    tcx,
-                    resolutions,
-                    infer_ctx,
-                    node_tys,
-                    generics,
-                );
+                let field_ty = field_def.ty.instantiate(args, tcx.partial_tir);
+                tcx.infcx.eq(*field_ty, Ty::Infer(var), field_init.span);
+                typeck_expr(field_init.expr, ast, tcx, resolutions, node_tys, generics);
             }
         }
         ast::ExprKind::Path(path @ ast::Path { span, .. }) => {
@@ -338,55 +341,59 @@ pub fn typeck_expr<'ast, 't>(
                 Res::Def(DefKind::Func, _) => {
                     let (id, args) =
                         building::build_args_for_path(&path, tcx, resolutions, generics);
-                    let args = args.instantiate_root_placeholders(tcx.tcx());
+                    let args = args.instantiate_root_placeholders(tcx.partial_tir);
                     Ty::FnDef(id, args)
                 }
                 _ => todo!(),
             };
-            infer_ctx.eq(res_ty, Ty::Infer(node_tys[&this_expr.id]), span);
+            tcx.infcx
+                .eq(res_ty, Ty::Infer(node_tys[&this_expr.id]), span);
         }
         ast::ExprKind::Lit(Literal::Int(_), span) => {
-            infer_ctx.eq(Ty::Int, Ty::Infer(node_tys[&this_expr.id]), span)
+            tcx.infcx
+                .eq(Ty::Int, Ty::Infer(node_tys[&this_expr.id]), span)
         }
         ast::ExprKind::Lit(Literal::Float(_), span) => {
-            infer_ctx.eq(Ty::Float, Ty::Infer(node_tys[&this_expr.id]), span)
+            tcx.infcx
+                .eq(Ty::Float, Ty::Infer(node_tys[&this_expr.id]), span)
         }
 
         ast::ExprKind::BinOp(_, _, _, _) => todo!(),
         ast::ExprKind::UnOp(_, _, _) => todo!(),
         ast::ExprKind::FnCall(ast::FnCall { func, args, span }) => {
-            let rcvr_id = infer_ctx.new_var(func.span());
+            let rcvr_id = tcx.infcx.new_var(func.span());
             node_tys.insert(func.id, rcvr_id);
-            typeck_expr(func, ast, tcx, resolutions, infer_ctx, node_tys, generics);
+            typeck_expr(func, ast, tcx, resolutions, node_tys, generics);
 
-            let rcvr = infer_ctx.resolve_ty(Ty::Infer(rcvr_id));
+            let rcvr = tcx.infcx.resolve_ty(Ty::Infer(rcvr_id));
             if let Ty::FnDef(id, fndef_args) = rcvr {
                 let func = tcx.get_item(id).unwrap_fn();
-                infer_ctx.eq(
-                    *func.ret_ty.instantiate(fndef_args, tcx.tcx()),
+                tcx.infcx.eq(
+                    *func.ret_ty.instantiate(fndef_args, tcx.partial_tir),
                     Ty::Infer(node_tys[&this_expr.id]),
                     span,
                 );
 
                 if func.params.len() != args.len() {
                     let err = diag_wrong_number_fn_args(func.params, args, span);
-                    tcx.tcx().err(err);
+                    tcx.partial_tir.err(err);
                 }
 
                 for (param, arg) in func.params.iter().zip(args.iter()) {
-                    let id = infer_ctx.new_var(arg.span());
+                    let id = tcx.infcx.new_var(arg.span());
                     node_tys.insert(arg.id, id);
-                    infer_ctx.eq(
+                    tcx.infcx.eq(
                         Ty::Infer(id),
-                        *param.ty.instantiate(fndef_args, tcx.tcx()),
+                        *param.ty.instantiate(fndef_args, tcx.partial_tir),
                         arg.span(),
                     );
-                    typeck_expr(arg, ast, tcx, resolutions, infer_ctx, node_tys, generics);
+                    typeck_expr(arg, ast, tcx, resolutions, node_tys, generics);
                 }
             } else {
-                let err = diag_fn_call_on_non_fn(tcx.tcx(), rcvr, func.span());
-                tcx.tcx().err(err);
-                infer_ctx.eq(Ty::Error, Ty::Infer(node_tys[&this_expr.id]), span);
+                let err = diag_fn_call_on_non_fn(tcx.partial_tir, rcvr, func.span());
+                tcx.partial_tir.err(err);
+                tcx.infcx
+                    .eq(Ty::Error, Ty::Infer(node_tys[&this_expr.id]), span);
             }
         }
 

@@ -1,4 +1,4 @@
-use std::{os::unix::process::CommandExt, path::PathBuf, process::Command};
+use std::{path::PathBuf, process::Command};
 
 use ui_test::{default_any_file_filter, OutputConflictHandling};
 
@@ -39,7 +39,7 @@ fn ui_tests(boxl_path: PathBuf) {
         },
         cfgs: no_command.clone(),
         output_conflict_handling: match should_bless {
-            false => OutputConflictHandling::Error("you've been naughty".into()),
+            false => OutputConflictHandling::Error("--bless".into()),
             true => OutputConflictHandling::Bless,
         },
         dependencies_crate_manifest_path: None,

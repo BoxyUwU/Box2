@@ -1,0 +1,9 @@
+error: mismatched types: a:Other[] b:Awk[]
+   ┌─ main.box:8:17
+   │  
+ 8 │   fn bar() -> Awk {
+   │ ╭─────────────────^
+ 9 │ │     foo[?](new Other {})
+10 │ │ }
+   │ ╰─^
+
