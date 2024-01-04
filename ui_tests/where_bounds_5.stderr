@@ -1,0 +1,6 @@
+error: path must resolve to a trait
+  ┌─ main.box:5:5
+  │
+5 │     Foo,
+  │     ^^^
+

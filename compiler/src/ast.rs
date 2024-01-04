@@ -112,6 +112,10 @@ impl<'a> Nodes<'a> {
         self.push_node(|id| Node::PathSeg(f(id))).unwrap_path_seg()
     }
 
+    pub fn push_clause(&'a self, f: impl FnOnce(NodeId) -> Clause<'a>) -> &Clause<'a> {
+        self.push_node(|id| Node::Clause(f(id))).unwrap_clause()
+    }
+
     pub fn get_variants_adt(&'a self, variant: NodeId) -> &'a TypeDef {
         let parent = self.variant_parent.borrow()[&variant];
         self.get(parent).unwrap_type_def()
@@ -123,6 +127,7 @@ pub struct NodeId(pub usize);
 
 #[derive(Copy, Clone, Debug)]
 pub enum Node<'a> {
+    Clause(Clause<'a>),
     Expr(Expr<'a>),
     Item(Item<'a>),
     Ty(Ty<'a>),
@@ -132,6 +137,10 @@ pub enum Node<'a> {
 }
 
 impl<'a> Node<'a> {
+    pub fn unwrap_clause(&self) -> &Clause<'a> {
+        unwrap_matches!(self, Node::Clause(clause) => clause)
+    }
+
     pub fn unwrap_item(&self) -> &Item<'a> {
         unwrap_matches!(self, Node::Item(item) => item)
     }
@@ -358,6 +367,7 @@ pub struct TypeAlias<'a> {
     pub name: &'a str,
     pub name_span: Span,
     pub generics: Generics<'a>,
+    pub bounds: Bounds<'a>,
     pub ty: Option<&'a Ty<'a>>,
 }
 
@@ -368,6 +378,7 @@ pub struct TypeDef<'a> {
     pub name: &'a str,
     pub name_span: Span,
     pub generics: Generics<'a>,
+    pub bounds: Bounds<'a>,
     pub variants: &'a [&'a VariantDef<'a>],
 }
 
@@ -404,6 +415,7 @@ pub struct Fn<'a> {
     pub params: &'a [&'a Param<'a>],
     pub ret_ty: Option<&'a Ty<'a>>,
     pub generics: Generics<'a>,
+    pub bounds: Bounds<'a>,
     pub body: Option<&'a Expr<'a>>,
 }
 
@@ -423,6 +435,7 @@ pub struct Trait<'a> {
     pub visibility: Visibility,
     pub ident: &'a str,
     pub generics: Generics<'a>,
+    pub bounds: Bounds<'a>,
     pub assoc_items: &'a [AssocItem<'a>],
 }
 
@@ -440,8 +453,27 @@ pub struct Impl<'a> {
     pub of_trait: Path<'a>,
 
     pub generics: Generics<'a>,
+    pub bounds: Bounds<'a>,
 
     pub assoc_items: &'a [AssocItem<'a>],
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Bounds<'a> {
+    pub clauses: &'a [Clause<'a>],
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Clause<'a> {
+    pub id: NodeId,
+    pub span: Span,
+    pub kind: ClauseKind<'a>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum ClauseKind<'a> {
+    AliasEq(Ty<'a>, Ty<'a>),
+    Trait(Path<'a>),
 }
 
 #[derive(Copy, Clone, Debug)]

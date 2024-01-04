@@ -1,0 +1,27 @@
+trait Trait[T] 
+where {
+} {}
+
+fn foo[U]()
+where {
+    Trait[U],
+} {
+}
+
+type Bar[U]
+where {
+    Trait[U]
+} {
+    field: U,
+}
+
+trait Qux[U]
+where {
+    Trait[U],
+} {}
+
+fn UwU[U, V]()
+where {
+    Trait[U],
+    Qux[V],
+} { }

@@ -301,6 +301,7 @@ pub struct Fn<'t> {
     pub params: &'t [Param<'t>],
     pub ret_ty: EarlyBinder<&'t Ty<'t>>,
     pub generics: &'t Generics<'t>,
+    pub bounds: EarlyBinder<Bounds<'t>>,
     pub body: Option<BodyId>,
 }
 
@@ -309,6 +310,7 @@ pub struct Adt<'t> {
     pub id: TirId,
     pub name: &'t str,
     pub generics: &'t Generics<'t>,
+    pub bounds: EarlyBinder<Bounds<'t>>,
     pub variants: &'t [&'t Variant<'t>],
 }
 
@@ -332,6 +334,7 @@ pub struct TyAlias<'t> {
     pub id: TirId,
     pub name: &'t str,
     pub generics: &'t Generics<'t>,
+    pub bounds: EarlyBinder<Bounds<'t>>,
     pub ty: Option<EarlyBinder<&'t Ty<'t>>>,
 }
 
@@ -340,6 +343,7 @@ pub struct Trait<'t> {
     pub id: TirId,
     pub name: &'t str,
     pub generics: &'t Generics<'t>,
+    pub bounds: EarlyBinder<Bounds<'t>>,
     pub assoc_items: &'t [AssocItem<'t>],
 }
 
@@ -348,6 +352,7 @@ pub struct Impl<'t> {
     pub id: TirId,
     pub of_trait: (TirId, EarlyBinder<GenArgs<'t>>),
     pub generics: &'t Generics<'t>,
+    pub bounds: EarlyBinder<Bounds<'t>>,
     pub assoc_items: &'t [AssocItem<'t>],
 }
 
@@ -362,4 +367,16 @@ pub struct Mod<'t> {
     pub id: TirId,
     pub name: &'t str,
     pub items: &'t [Item<'t>],
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Bounds<'t> {
+    clauses: &'t [Clause<'t>],
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Clause<'t> {
+    AliasEq(TirId, GenArgs<'t>, Ty<'t>),
+    Trait(TirId, GenArgs<'t>),
+    WellFormed(Ty<'t>),
 }

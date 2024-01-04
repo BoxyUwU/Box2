@@ -1,0 +1,6 @@
+mod bar {
+    type Baz {}
+}
+
+use bar::Baz
+where {}

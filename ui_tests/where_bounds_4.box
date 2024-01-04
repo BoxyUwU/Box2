@@ -1,0 +1,8 @@
+trait Trait {}
+trait Other {}
+
+fn foo()
+where {
+    Trait
+    Other
+} {}

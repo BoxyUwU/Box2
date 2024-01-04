@@ -57,6 +57,7 @@ pub enum Kw {
     Trait,
     Impl,
     For,
+    Where,
     New,
 }
 
@@ -92,6 +93,7 @@ pub enum Token<'a> {
     #[token("trait", |_| Kw::Trait)]
     #[token("for", |_| Kw::For)]
     #[token("new", |_| Kw::New)]
+    #[token("where", |_| Kw::Where)]
     Kw(Kw),
 
     #[token("::")]

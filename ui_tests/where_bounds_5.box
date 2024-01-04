@@ -1,0 +1,6 @@
+type Foo {}
+
+fn bar()
+where {
+    Foo,
+} {}

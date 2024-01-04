@@ -34,6 +34,12 @@ fn diag_infer_var_in_signature(span: Span) -> Diagnostic<usize> {
         .with_labels(vec![Label::primary(0, span)])
 }
 
+fn diag_non_trait_resolution_of_trait_bound(span: Span) -> Diagnostic<usize> {
+    Diagnostic::error()
+        .with_message(&format!("path must resolve to a trait"))
+        .with_labels(vec![Label::primary(0, span)])
+}
+
 pub struct ItemTirBuilder<'t> {
     empty_tir: &'t TirCtx<'t>,
     next_tir_id: TirId,
@@ -355,7 +361,9 @@ pub fn build_ty<'t>(
                             .alloc(Ty::Bound(DebruijnIndex(0), BoundVar(var_idx))),
                     )
                 }
-                Res::Def(_, _) | Res::Local(_) => unreachable!(),
+                res @ (Res::Def(_, _) | Res::Local(_)) => {
+                    unreachable!("unexpected path res of ty: {:?}", res)
+                }
             }
         }
     }
@@ -502,6 +510,45 @@ pub fn build_generics<'a, 't>(
     tir.empty_tir.arena.alloc(generics)
 }
 
+pub fn build_bounds<'a, 't>(
+    bounds: ast::Bounds<'a>,
+    tir: &mut ItemTirBuilder<'t>,
+    resolutions: &HashMap<NodeId, Res<NodeId>>,
+    item_generics: &'t Generics<'t>,
+) -> EarlyBinder<tir::Bounds<'t>> {
+    let clauses = bounds
+        .clauses
+        .iter()
+        .flat_map(|clause| match &clause.kind {
+            ast::ClauseKind::AliasEq(t1, t2) => {
+                let t1 = build_ty(t1, tir, resolutions, item_generics).skip_binder();
+                let _t2 = build_ty(t2, tir, resolutions, item_generics).skip_binder();
+                match t1 {
+                    _ => todo!("aliases not yet added"),
+                };
+            }
+            ast::ClauseKind::Trait(path) => match resolutions[&path.segments.last().unwrap().id] {
+                Res::Def(DefKind::Trait, _) => {
+                    let (id, args) = build_args_for_path(path, tir, resolutions, item_generics);
+                    Some(tir::Clause::Trait(id, args.skip_binder()))
+                }
+                Res::Def(_, _) => {
+                    tir.err(diag_non_trait_resolution_of_trait_bound(path.span));
+                    None
+                }
+                Res::Local(_) => unreachable!(),
+            },
+        })
+        .chain(item_generics.params.iter().map(|param| {
+            let var_idx = item_generics.param_id_to_var[&param.id];
+            tir::Clause::WellFormed(Ty::Bound(DebruijnIndex(0), BoundVar(var_idx)))
+        }))
+        .collect::<Vec<_>>();
+
+    let clauses = tir.arena().alloc_slice_fill_iter(clauses);
+    EarlyBinder(tir::Bounds { clauses })
+}
+
 pub fn build_mod<'a, 't>(
     ast: &'a Nodes<'a>,
     mod_: &ast::Module<'a>,
@@ -538,6 +585,8 @@ pub fn build_adt_def<'a, 't>(
     let id = tir.get_id(adt.id).unwrap();
 
     let generics = tir.get_generics(id);
+
+    let bounds = build_bounds(adt.bounds, tir, resolutions, generics);
 
     let variants = adt
         .variants
@@ -597,6 +646,7 @@ pub fn build_adt_def<'a, 't>(
         id,
         name: tir.empty_tir.arena.alloc(adt.name.to_string()),
         generics,
+        bounds,
         variants,
     };
     let tir_adt = tir.empty_tir.arena.alloc(tir_adt);
@@ -613,11 +663,13 @@ fn build_type_alias<'a, 't>(
     let id = tir.get_id(alias.id).unwrap();
 
     let generics = tir.get_generics(id);
+    let bounds = build_bounds(alias.bounds, tir, resolutions, generics);
 
     let tir_alias = tir::TyAlias {
         id,
         name: tir.empty_tir.arena.alloc(alias.name.to_string()),
         generics,
+        bounds,
         ty: alias.ty.map(|ty| build_ty(ty, tir, resolutions, generics)),
     };
     let tir_alias = tir.empty_tir.arena.alloc(tir_alias);
@@ -636,6 +688,7 @@ fn build_fn<'a, 't>(
 ) -> &'t Fn<'t> {
     let id = tir.get_id(func.id).unwrap();
     let generics = tir.get_generics(id);
+    let bounds = build_bounds(func.bounds, tir, resolutions, generics);
 
     let params = func
         .params
@@ -652,6 +705,7 @@ fn build_fn<'a, 't>(
         id,
         name: tir.empty_tir.arena.alloc(func.name.to_string()),
         generics,
+        bounds,
         params,
         ret_ty: func
             .ret_ty
@@ -675,6 +729,7 @@ fn build_trait<'a, 't>(
 ) -> &'t Trait<'t> {
     let id = tir.get_id(trait_.id).unwrap();
     let generics = tir.get_generics(id);
+    let bounds = build_bounds(trait_.bounds, tir, resolutions, generics);
 
     let assoc_items = trait_
         .assoc_items
@@ -693,6 +748,7 @@ fn build_trait<'a, 't>(
         id,
         name: tir.empty_tir.arena.alloc(trait_.ident.to_string()),
         generics,
+        bounds,
         assoc_items,
     };
     let tir_trait = tir.empty_tir.arena.alloc(tir_trait);
@@ -708,6 +764,7 @@ fn build_impl<'a, 't>(
 ) -> &'t Impl<'t> {
     let id = tir.get_id(impl_.id).unwrap();
     let generics = tir.get_generics(id);
+    let bounds = build_bounds(impl_.bounds, tir, resolutions, generics);
 
     let assoc_items = impl_
         .assoc_items
@@ -753,6 +810,7 @@ fn build_impl<'a, 't>(
         id,
         of_trait,
         generics,
+        bounds,
         assoc_items,
     };
     let tir_impl = tir.empty_tir.arena.alloc(tir_impl);

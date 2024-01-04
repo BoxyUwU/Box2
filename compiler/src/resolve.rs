@@ -43,7 +43,7 @@ impl Res<NodeId> {
                 kind: ExprKind::Let(_, _, _),
             }) => Res::Local(id),
             Node::GenericParam(param) => Res::Def(DefKind::GenericParam, param.id),
-            Node::PathSeg(_) | Node::Expr(_) | Node::Ty(_) => unreachable!(),
+            Node::Clause(_) | Node::PathSeg(_) | Node::Expr(_) | Node::Ty(_) => unreachable!(),
         }
     }
 }
@@ -112,6 +112,24 @@ impl<'ast> Resolver<'ast> {
         ret
     }
 
+    pub fn resolve_bounds(&mut self, bounds: &Bounds<'_>) {
+        for clause in bounds.clauses {
+            self.resolve_clause(clause);
+        }
+    }
+
+    pub fn resolve_clause(&mut self, clause: &Clause<'_>) {
+        match &clause.kind {
+            ClauseKind::AliasEq(t1, t2) => {
+                self.resolve_ty(t1);
+                self.resolve_ty(t2);
+            }
+            ClauseKind::Trait(path) => {
+                let _ = self.resolve_path(None, clause.id, path);
+            }
+        }
+    }
+
     pub fn resolve_mod(&mut self, module: &Module) {
         use std::iter::FromIterator;
         let bindings = HashMap::from_iter(module.items.iter().flat_map(|&item| {
@@ -142,10 +160,7 @@ impl<'ast> Resolver<'ast> {
                     Item::TypeDef(ty_def) => this.resolve_type_def(ty_def),
                     Item::Impl(impl_) => this.resolve_impl(impl_),
                     Item::Trait(trait_) => this.resolve_trait(trait_),
-                    Item::TypeAlias(alias) => match alias.ty {
-                        Some(ty) => this.resolve_ty(ty),
-                        None => (),
-                    },
+                    Item::TypeAlias(alias) => this.resolve_type_alias(alias),
                     Item::Use(..) => (), // handled above when building bindings
                     Item::VariantDef(..) | Item::FieldDef(..) => unreachable!(),
                 }
@@ -159,11 +174,13 @@ impl<'ast> Resolver<'ast> {
             span: _,
             of_trait,
             generics,
+            bounds,
             assoc_items,
         } = impl_;
 
         self.with_rib(Rib::from_generics(&generics), |this| {
             let _ = this.resolve_path(None, *id, of_trait);
+            this.resolve_bounds(bounds);
             for assoc_item in *assoc_items {
                 this.resolve_associated_item(assoc_item);
             }
@@ -177,9 +194,11 @@ impl<'ast> Resolver<'ast> {
             visibility: _,
             ident: _,
             generics,
+            bounds,
             assoc_items,
         } = trait_;
         self.with_rib(Rib::from_generics(generics), |this| {
+            this.resolve_bounds(bounds);
             for assoc_item in *assoc_items {
                 this.resolve_associated_item(assoc_item);
             }
@@ -189,15 +208,22 @@ impl<'ast> Resolver<'ast> {
     fn resolve_associated_item(&mut self, assoc_item: &AssocItem<'_>) {
         match assoc_item {
             AssocItem::Fn(f) => self.resolve_fn(f),
-            AssocItem::Type(t) => match t.ty {
-                Some(ty) => self.resolve_ty(ty),
-                None => (),
-            },
+            AssocItem::Type(t) => self.resolve_type_alias(t),
         }
+    }
+
+    fn resolve_type_alias(&mut self, alias: &TypeAlias<'_>) {
+        self.with_rib(Rib::from_generics(&alias.generics), |this| {
+            this.resolve_bounds(&alias.bounds);
+            if let Some(ty) = alias.ty {
+                this.resolve_ty(ty);
+            }
+        });
     }
 
     fn resolve_type_def(&mut self, ty_def: &TypeDef) {
         self.with_rib(Rib::from_generics(&ty_def.generics), |this| {
+            this.resolve_bounds(&ty_def.bounds);
             ty_def
                 .variants
                 .iter()
@@ -240,6 +266,7 @@ impl<'ast> Resolver<'ast> {
             if let Some(ret) = func.ret_ty {
                 this.resolve_ty(ret);
             }
+            this.resolve_bounds(&func.bounds);
 
             use std::iter::FromIterator;
             if let Some(body) = func.body {

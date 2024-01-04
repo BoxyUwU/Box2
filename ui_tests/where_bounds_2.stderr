@@ -1,0 +1,6 @@
+error: expected {
+  ┌─ main.box:2:1
+  │
+2 │ where {
+  │ ^^^^^ found where
+

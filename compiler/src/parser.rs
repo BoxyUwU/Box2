@@ -114,6 +114,7 @@ impl Kw {
             Kw::Impl => "impl".into(),
             Kw::Trait => "trait".into(),
             Kw::For => "for".into(),
+            Kw::Where => "where".into(),
             Kw::New => "new".into(),
         }
     }
@@ -487,6 +488,11 @@ pub fn parse_fn<'a>(
         ret_ty = Some(parse_ty(tok, nodes)?);
     }
 
+    let bounds = match tok.peek_if(Token::Kw(Kw::Where)) {
+        Ok(_) => parse_bounds(tok, nodes)?,
+        Err(_) => Bounds { clauses: &[] },
+    };
+
     let body = match tok.next_if(Token::SemiColon) {
         Ok(_) => None,
         Err(_) => Some(parse_block_expr(tok, nodes)?),
@@ -498,6 +504,7 @@ pub fn parse_fn<'a>(
         params: nodes.arena.alloc_slice_fill_iter(params),
         ret_ty,
         generics,
+        bounds,
         body,
     }))
 }
@@ -520,9 +527,18 @@ pub fn parse_type_def<'a>(
 
     let generics = parse_opt_generic_params(tok, nodes)?;
 
+    let bounds = match tok.peek_if(Token::Kw(Kw::Where)) {
+        Ok(_) => parse_bounds(tok, nodes)?,
+        Err(_) => Bounds { clauses: &[] },
+    };
+
     // type def is only permitted to not have a name if it is
     // the rhs of a field i.e. `field: type { ... }`
     if let None = name {
+        // FIXME: forbid having any generic params when name is none
+        //          while `field: type where { Bound[T] } { ... }` is logically fine
+        //          `field: type[T] { a: T }` is not as it is unclear what to provide as the argument
+
         let (field_name, field_name_span) = parent_field.ok_or_else(|| {
             Diagnostic::error()
                 .with_message("expected a name")
@@ -553,6 +569,7 @@ pub fn parse_type_def<'a>(
             name,
             name_span,
             generics,
+            bounds,
             ty: None,
         }));
     }
@@ -574,6 +591,7 @@ pub fn parse_type_def<'a>(
             name,
             name_span,
             generics,
+            bounds,
             ty: Some(ty),
         }));
     }
@@ -645,6 +663,7 @@ pub fn parse_type_def<'a>(
         name,
         name_span,
         generics,
+        bounds,
         variants: nodes.arena.alloc_slice_fill_iter(variants),
     });
     Ok(item)
@@ -852,11 +871,7 @@ pub fn parse_ty<'a>(
         (TyKind::Path(path), path.span)
     };
 
-    Ok(nodes.push_ty(|id| Ty {
-        id,
-        kind,
-        span,
-    }))
+    Ok(nodes.push_ty(|id| Ty { id, kind, span }))
 }
 
 pub fn parse_trait<'a>(
@@ -877,6 +892,11 @@ pub fn parse_trait<'a>(
         .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
 
     let generics = parse_opt_generic_params(tok, nodes)?;
+
+    let bounds = match tok.peek_if(Token::Kw(Kw::Where)) {
+        Ok(_) => parse_bounds(tok, nodes)?,
+        Err(_) => Bounds { clauses: &[] },
+    };
 
     tok.next_if(Token::LBrace)
         .map_err(|(tok, sp)| diag_expected_found("{", tok, sp))?;
@@ -918,6 +938,7 @@ pub fn parse_trait<'a>(
         visibility,
         ident: name,
         generics,
+        bounds,
         assoc_items: nodes.arena.alloc_slice_fill_iter(items),
     }))
 }
@@ -933,6 +954,11 @@ pub fn parse_impl<'a>(
     let generics = parse_opt_generic_params(tok, nodes)?;
 
     let of_trait = parse_path(tok, nodes)?;
+
+    let bounds = match tok.peek_if(Token::Kw(Kw::Where)) {
+        Ok(_) => parse_bounds(tok, nodes)?,
+        Err(_) => Bounds { clauses: &[] },
+    };
 
     tok.next_if(Token::LBrace)
         .map_err(|(tok, sp)| diag_expected_found("{", tok, sp))?;
@@ -973,8 +999,63 @@ pub fn parse_impl<'a>(
         span,
         of_trait,
         generics,
+        bounds,
         assoc_items: nodes.arena.alloc_slice_fill_iter(items),
     }))
+}
+
+pub fn parse_bounds<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &'a Nodes<'a>,
+) -> Result<Bounds<'a>, Diagnostic<usize>> {
+    if let Err((found, span)) = tok.next_if(Token::Kw(Kw::Where)) {
+        return Err(diag_expected_found("where", found, span));
+    }
+
+    tok.next_if(Token::LBrace)
+        .map_err(|(found, span)| diag_expected_found("{", found, span))?;
+
+    let mut clauses = vec![];
+
+    while tok.peek_if(Token::RBrace).is_err() {
+        let path_or_ty = parse_ty(tok, nodes)?;
+
+        match tok.next_if(Token::Arrow) {
+            Ok(_) => {
+                let ty = parse_ty(tok, nodes)?;
+                let clause = *nodes.push_clause(|id| Clause {
+                    id,
+                    span: Span::join(path_or_ty.span, ty.span),
+                    kind: ClauseKind::AliasEq(*path_or_ty, *ty),
+                });
+                clauses.push(clause);
+            }
+            Err(_) => {
+                let path = match path_or_ty.kind {
+                    TyKind::Path(path) => path,
+                    _ => unreachable!(),
+                };
+                let clause = *nodes.push_clause(|id| Clause {
+                    id,
+                    span: path.span,
+                    kind: ClauseKind::Trait(path),
+                });
+                clauses.push(clause);
+            }
+        }
+
+        match tok.next_if(Token::Comma) {
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+    }
+
+    tok.next_if(Token::RBrace)
+        .map_err(|(found, span)| diag_expected_found("}", found, span))?;
+
+    Ok(Bounds {
+        clauses: nodes.arena.alloc_slice_fill_iter(clauses),
+    })
 }
 
 #[cfg(test)]
