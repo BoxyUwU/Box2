@@ -1,0 +1,12 @@
+error: alias equality bound with non alias type on the left hand side
+   ┌─ main.box:15:5
+   │
+15 │     Bar -> Trait[U]::Assoc,
+   │     ^^^
+
+error: alias equality bound with non alias type on the left hand side
+   ┌─ main.box:20:5
+   │
+20 │     Orange[T] -> Bar,
+   │     ^^^^^^
+

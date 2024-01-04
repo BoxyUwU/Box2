@@ -57,6 +57,9 @@ fn main() {
     for diag in &resolver.errors {
         codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
     }
+    if resolver.errors.len() > 0 {
+        return;
+    }
 
     let tir_ctx = tir::TirCtx::new();
     let (tir, ref body_sources, tir_ctx, lowered_ids) =

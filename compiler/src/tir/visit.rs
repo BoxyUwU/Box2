@@ -130,7 +130,7 @@ impl<'t> TypeSuperVisitable<'t> for &'t Ty<'t> {
             | Ty::Int
             | Ty::Float
             | Ty::Error => (),
-            Ty::FnDef(_, args) | Ty::Adt(_, args) => args.visit_with(v),
+            Ty::Alias(_, args) | Ty::FnDef(_, args) | Ty::Adt(_, args) => args.visit_with(v),
         }
     }
 }
@@ -149,6 +149,7 @@ impl<'t> TypeSuperFoldable<'t> for &'t Ty<'t> {
             | Ty::Int
             | Ty::Float
             | Ty::Error => self,
+            Ty::Alias(id, args) => v.tcx().arena.alloc(Ty::Alias(*id, args.fold_with(v))),
             Ty::FnDef(id, args) => v.tcx().arena.alloc(Ty::FnDef(*id, args.fold_with(v))),
             Ty::Adt(id, args) => v.tcx().arena.alloc(Ty::Adt(*id, args.fold_with(v))),
         }
@@ -207,7 +208,9 @@ impl<'t, T: TypeVisitable<'t>> TypeVisitableExt<'t> for T {
                     | Ty::Placeholder(_, _)
                     | Ty::Int
                     | Ty::Float => return,
-                    Ty::FnDef(_, args) | Ty::Adt(_, args) => args.visit_with(self),
+                    Ty::Alias(_, args) | Ty::FnDef(_, args) | Ty::Adt(_, args) => {
+                        args.visit_with(self)
+                    }
                     Ty::Error => {
                         self.0 = true;
                         return;

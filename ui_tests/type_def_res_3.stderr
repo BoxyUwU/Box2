@@ -22,27 +22,3 @@ error: failed to resolve Blah
 22 │     new Blah {};
    │         ^^^^
 
-error: could not infer type
-   ┌─ main.box:13:9
-   │
-13 │         field_awd: new FieldTy {},
-   │         ^^^^^^^^^
-
-error: could not infer type
-   ┌─ main.box:17:9
-   │
-17 │         field: 10,
-   │         ^^^^^
-
-error: could not infer type
-   ┌─ main.box:20:5
-   │
-20 │     new Bar::Bazz {};
-   │     ^^^^^^^^^^^^^^^^
-
-error: could not infer type
-   ┌─ main.box:22:5
-   │
-22 │     new Blah {};
-   │     ^^^^^^^^^^^
-

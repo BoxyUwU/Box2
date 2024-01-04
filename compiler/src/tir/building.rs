@@ -40,6 +40,23 @@ fn diag_non_trait_resolution_of_trait_bound(span: Span) -> Diagnostic<usize> {
         .with_labels(vec![Label::primary(0, span)])
 }
 
+fn diag_unexpected_res_of_path_ty(span: Span, actual_res: &str) -> Diagnostic<usize> {
+    Diagnostic::error()
+        .with_message(&format!(
+            "path resolved to {} which is not valid for a type",
+            actual_res
+        ))
+        .with_labels(vec![Label::primary(0, span)])
+}
+
+fn diag_non_alias_in_alias_eq_bound(span: Span) -> Diagnostic<usize> {
+    Diagnostic::error()
+        .with_message(&format!(
+            "alias equality bound with non alias type on the left hand side"
+        ))
+        .with_labels(vec![Label::primary(0, span)])
+}
+
 pub struct ItemTirBuilder<'t> {
     empty_tir: &'t TirCtx<'t>,
     next_tir_id: TirId,
@@ -353,6 +370,14 @@ pub fn build_ty<'t>(
                     let tir_id = tcx.get_id(id).unwrap();
                     EarlyBinder(tcx.arena().alloc(Ty::Adt(tir_id, args.skip_binder())))
                 }
+                Res::Def(DefKind::TypeAlias, id) => {
+                    let tir_id = tcx.get_id(id).unwrap();
+                    EarlyBinder(tcx.arena().alloc(Ty::Alias(tir_id, args.skip_binder())))
+                }
+                Res::Def(DefKind::Func, id) => {
+                    let tir_id = tcx.get_id(id).unwrap();
+                    EarlyBinder(tcx.arena().alloc(Ty::FnDef(tir_id, args.skip_binder())))
+                }
                 Res::Def(DefKind::GenericParam, id) => {
                     let tir_id = tcx.get_id(id).unwrap();
                     let var_idx = item_generics.param_id_to_var[&tir_id];
@@ -361,9 +386,24 @@ pub fn build_ty<'t>(
                             .alloc(Ty::Bound(DebruijnIndex(0), BoundVar(var_idx))),
                     )
                 }
-                res @ (Res::Def(_, _) | Res::Local(_)) => {
-                    unreachable!("unexpected path res of ty: {:?}", res)
+                Res::Def(DefKind::Variant, _) => {
+                    tcx.err(diag_unexpected_res_of_path_ty(path.span, "a variant"));
+                    EarlyBinder(tcx.arena().alloc(Ty::Error))
                 }
+                Res::Def(DefKind::Trait, _) => {
+                    tcx.err(diag_unexpected_res_of_path_ty(path.span, "a trait"));
+                    EarlyBinder(tcx.arena().alloc(Ty::Error))
+                }
+                Res::Def(DefKind::Mod, _) => {
+                    tcx.err(diag_unexpected_res_of_path_ty(path.span, "a module"));
+                    EarlyBinder(tcx.arena().alloc(Ty::Error))
+                }
+                Res::Local(_) => {
+                    tcx.err(diag_unexpected_res_of_path_ty(path.span, "a local"));
+                    EarlyBinder(tcx.arena().alloc(Ty::Error))
+                }
+
+                Res::Def(DefKind::Field, _) => unreachable!(),
             }
         }
     }
@@ -521,11 +561,16 @@ pub fn build_bounds<'a, 't>(
         .iter()
         .flat_map(|clause| match &clause.kind {
             ast::ClauseKind::AliasEq(t1, t2) => {
+                let t1_span = t1.span;
                 let t1 = build_ty(t1, tir, resolutions, item_generics).skip_binder();
-                let _t2 = build_ty(t2, tir, resolutions, item_generics).skip_binder();
-                match t1 {
-                    _ => todo!("aliases not yet added"),
-                };
+                let t2 = build_ty(t2, tir, resolutions, item_generics).skip_binder();
+                match *t1 {
+                    Ty::Alias(id, args) => Some(tir::Clause::AliasEq(id, args, *t2)),
+                    _ => {
+                        tir.err(diag_non_alias_in_alias_eq_bound(t1_span));
+                        None
+                    }
+                }
             }
             ast::ClauseKind::Trait(path) => match resolutions[&path.segments.last().unwrap().id] {
                 Res::Def(DefKind::Trait, _) => {

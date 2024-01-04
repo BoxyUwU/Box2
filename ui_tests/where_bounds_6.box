@@ -1,0 +1,6 @@
+fn foo() {}
+
+fn bar(a: foo)
+where {
+    a,
+} {}

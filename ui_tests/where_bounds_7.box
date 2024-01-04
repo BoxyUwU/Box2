@@ -1,0 +1,21 @@
+trait Trait[T] {
+    type Assoc;
+}
+
+type Bar {}
+type Orange[T] { a: T }
+
+fn foo[U]()
+where {
+    Trait[U]::Assoc -> Bar,
+} {}
+
+fn qux[U]()
+where {
+    Bar -> Trait[U]::Assoc,
+} {}
+
+fn uwu[T]()
+where {
+    Orange[T] -> Bar,
+} {}

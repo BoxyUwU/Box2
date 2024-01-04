@@ -1,0 +1,6 @@
+error: failed to resolve a
+  ┌─ main.box:5:5
+  │
+5 │     a,
+  │     ^
+

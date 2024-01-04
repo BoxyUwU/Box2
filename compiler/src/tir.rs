@@ -91,6 +91,7 @@ impl<T> EarlyBinder<T> {
             fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
                 match ty {
                     Ty::Unit
+                    | Ty::Alias(_, _)
                     | Ty::Infer(_)
                     | Ty::FnDef(_, _)
                     | Ty::Adt(_, _)
@@ -128,6 +129,7 @@ impl<T> EarlyBinder<T> {
                     | Ty::Placeholder(_, _)
                     | Ty::Int
                     | Ty::Float
+                    | Ty::Alias(_, _)
                     | Ty::Error => ty.super_fold_with(self),
                     // FIXME: ideally this would check that the depth is correct
                     Ty::Bound(_, var) => self.0.arena.alloc(Ty::Placeholder(Universe(0), *var)),
@@ -150,6 +152,7 @@ pub enum Ty<'t> {
     Infer(InferId),
     FnDef(TirId, GenArgs<'t>),
     Adt(TirId, GenArgs<'t>),
+    Alias(TirId, GenArgs<'t>),
     Bound(DebruijnIndex, BoundVar),
     Placeholder(Universe, BoundVar),
     Int,
@@ -290,6 +293,13 @@ impl<'t> Item<'t> {
         match self {
             Item::Fn(func) => func,
             _ => panic!("item was not a func: {:?}", self),
+        }
+    }
+
+    pub fn unwrap_alias(&self) -> &TyAlias<'t> {
+        match self {
+            Item::TyAlias(alias) => alias,
+            _ => panic!("item was not an alias: {:?}", self),
         }
     }
 }

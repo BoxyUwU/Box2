@@ -146,7 +146,6 @@ impl<'t> Ty<'t> {
                     }
                 }
                 let func = tcx.get_item(id).unwrap_fn();
-
                 format!("{}[{}]", func.name, pretty_args)
             }
             Ty::Adt(id, args) => {
@@ -162,6 +161,20 @@ impl<'t> Ty<'t> {
                 }
                 let adt = tcx.get_item(id).unwrap_adt();
                 format!("{}[{}]", adt.name, pretty_args)
+            }
+            Ty::Alias(id, args) => {
+                let mut pretty_args = String::new();
+                for arg in args.0 {
+                    if !pretty_args.is_empty() {
+                        pretty_args.push_str(", ");
+                    }
+
+                    match arg {
+                        GenArg::Ty(ty) => pretty_args.push_str(&ty.pretty(tcx)),
+                    }
+                }
+                let alias = tcx.get_item(id).unwrap_alias();
+                format!("{}[{}]", alias.name, pretty_args)
             }
             Ty::Bound(db, bv) => format!("^{}_{}", db.0, bv.0),
             Ty::Placeholder(u, bv) => format!("!{}_{}", u.0, bv.0),
@@ -227,6 +240,7 @@ impl<'t> InferCtxt<'t> {
                     self.constraints.try_insert(a, Ty::Infer(b)).unwrap();
                 }
             },
+            (Ty::Alias(_, _), _) | (_, Ty::Alias(_, _)) => todo!(),
             // FIXME: universe errors
             (Ty::Infer(a), _) => {
                 self.constraints.try_insert(a, b).unwrap();
