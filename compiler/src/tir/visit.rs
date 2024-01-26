@@ -97,9 +97,26 @@ pub fn super_visit_impl<'t, V: Visitor<'t>>(v: &mut V, impl_: &Impl<'t>) {
 pub trait TypeVisitor<'t> {
     fn visit_ty(&mut self, ty: &'t Ty<'t>);
 }
-pub trait TypeFolder<'t> {
+pub trait TypeFolder<'t>: FallibleTypeFolder<'t, Error = core::convert::Infallible> {
     fn tcx(&self) -> &'t TirCtx<'t>;
     fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t>;
+}
+pub trait FallibleTypeFolder<'t> {
+    type Error;
+    fn tcx(&self) -> &'t TirCtx<'t>;
+    fn try_fold_ty(&mut self, ty: &'t Ty<'t>) -> Result<&'t Ty<'t>, Self::Error>;
+}
+
+impl<'t, F: TypeFolder<'t>> FallibleTypeFolder<'t> for F {
+    type Error = core::convert::Infallible;
+
+    fn tcx(&self) -> &'t TirCtx<'t> {
+        TypeFolder::tcx(self)
+    }
+
+    fn try_fold_ty(&mut self, ty: &'t Ty<'t>) -> Result<&'t Ty<'t>, Self::Error> {
+        Ok(TypeFolder::fold_ty(self, ty))
+    }
 }
 
 pub trait TypeVisitable<'t>: Sized {
@@ -109,10 +126,16 @@ pub trait TypeSuperVisitable<'t>: TypeVisitable<'t> {
     fn super_visit_with<V: TypeVisitor<'t>>(&self, v: &mut V);
 }
 pub trait TypeFoldable<'t>: Sized {
-    fn fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self;
+    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error>;
+    fn fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
+        self.try_fold_with(v).unwrap()
+    }
 }
 pub trait TypeSuperFoldable<'t>: TypeFoldable<'t> {
-    fn super_fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self;
+    fn try_super_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error>;
+    fn super_fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
+        self.try_super_fold_with(v).unwrap()
+    }
 }
 
 impl<'t> TypeVisitable<'t> for &'t Ty<'t> {
@@ -135,13 +158,13 @@ impl<'t> TypeSuperVisitable<'t> for &'t Ty<'t> {
     }
 }
 impl<'t> TypeFoldable<'t> for &'t Ty<'t> {
-    fn fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
-        v.fold_ty(self)
+    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+        v.try_fold_ty(self)
     }
 }
 impl<'t> TypeSuperFoldable<'t> for &'t Ty<'t> {
-    fn super_fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
-        match self {
+    fn try_super_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+        Ok(match self {
             Ty::Unit
             | Ty::Infer(_)
             | Ty::Bound(_, _)
@@ -149,10 +172,11 @@ impl<'t> TypeSuperFoldable<'t> for &'t Ty<'t> {
             | Ty::Int
             | Ty::Float
             | Ty::Error => self,
-            Ty::Alias(id, args) => v.tcx().arena.alloc(Ty::Alias(*id, args.fold_with(v))),
-            Ty::FnDef(id, args) => v.tcx().arena.alloc(Ty::FnDef(*id, args.fold_with(v))),
-            Ty::Adt(id, args) => v.tcx().arena.alloc(Ty::Adt(*id, args.fold_with(v))),
-        }
+
+            Ty::Alias(id, args) => v.tcx().arena.alloc(Ty::Alias(*id, args.try_fold_with(v)?)),
+            Ty::FnDef(id, args) => v.tcx().arena.alloc(Ty::FnDef(*id, args.try_fold_with(v)?)),
+            Ty::Adt(id, args) => v.tcx().arena.alloc(Ty::Adt(*id, args.try_fold_with(v)?)),
+        })
     }
 }
 
@@ -164,12 +188,15 @@ impl<'t> TypeVisitable<'t> for GenArgs<'t> {
     }
 }
 impl<'t> TypeFoldable<'t> for GenArgs<'t> {
-    fn fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
-        GenArgs(
-            v.tcx()
-                .arena
-                .alloc_slice_fill_iter(self.0.iter().map(|&arg| arg.fold_with(v))),
-        )
+    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+        Ok(GenArgs(
+            v.tcx().arena.alloc_slice_fill_iter(
+                self.0
+                    .iter()
+                    .map(|&arg| arg.try_fold_with(v))
+                    .collect::<Result<Vec<_>, V::Error>>()?,
+            ),
+        ))
     }
 }
 
@@ -181,10 +208,58 @@ impl<'t> TypeVisitable<'t> for GenArg<'t> {
     }
 }
 impl<'t> TypeFoldable<'t> for GenArg<'t> {
-    fn fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
+    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
         match self {
-            GenArg::Ty(ty) => GenArg::Ty(v.fold_ty(ty)),
+            GenArg::Ty(ty) => Ok(GenArg::Ty(v.try_fold_ty(ty)?)),
         }
+    }
+}
+
+impl<'t> TypeVisitable<'t> for Clause<'t> {
+    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+        match self {
+            Clause::AliasEq(_, args, ty) => {
+                args.visit_with(v);
+                ty.visit_with(v);
+            }
+            Clause::Trait(_, args) => {
+                args.visit_with(v);
+            }
+            Clause::WellFormed(ty) => {
+                ty.visit_with(v);
+            }
+        }
+    }
+}
+impl<'t> TypeFoldable<'t> for Clause<'t> {
+    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+        Ok(match self {
+            Clause::AliasEq(id, args, ty) => {
+                Clause::AliasEq(id, args.try_fold_with(v)?, ty.try_fold_with(v)?)
+            }
+            Clause::Trait(id, args) => Clause::Trait(id, args.try_fold_with(v)?),
+            Clause::WellFormed(ty) => Clause::WellFormed(ty.try_fold_with(v)?),
+        })
+    }
+}
+
+impl<'t> TypeVisitable<'t> for Bounds<'t> {
+    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+        for clause in self.clauses {
+            clause.visit_with(v);
+        }
+    }
+}
+impl<'t> TypeFoldable<'t> for Bounds<'t> {
+    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+        Ok(Bounds {
+            clauses: v.tcx().arena.alloc_slice_fill_iter(
+                self.clauses
+                    .iter()
+                    .map(|clause| clause.try_fold_with(v))
+                    .collect::<Result<Vec<_>, V::Error>>()?,
+            ),
+        })
     }
 }
 

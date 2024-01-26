@@ -16,7 +16,7 @@ pub mod building;
 pub mod visit;
 
 pub struct TirCtx<'t> {
-    arena: Bump,
+    pub arena: Bump,
     items: RefCell<HashMap<TirId, &'t Item<'t>>>,
 
     errors: RefCell<Vec<Diagnostic<usize>>>,
@@ -386,7 +386,7 @@ pub struct Bounds<'t> {
 
 #[derive(Debug, Copy, Clone)]
 pub enum Clause<'t> {
-    AliasEq(TirId, GenArgs<'t>, Ty<'t>),
+    AliasEq(TirId, GenArgs<'t>, &'t Ty<'t>),
     Trait(TirId, GenArgs<'t>),
-    WellFormed(Ty<'t>),
+    WellFormed(&'t Ty<'t>),
 }

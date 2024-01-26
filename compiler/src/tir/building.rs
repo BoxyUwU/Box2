@@ -5,7 +5,7 @@ use codespan_reporting::diagnostic::Label;
 use crate::ast::visit::Visitor;
 use crate::ast::{self, NodeId, Nodes};
 use crate::resolve::DefKind;
-use crate::typeck::InferCtxt;
+use crate::typeck::TypeckCtxt;
 
 use super::super::tir;
 use super::*;
@@ -103,12 +103,6 @@ impl<'t> ItemTirBuilder<'t> {
     }
 }
 
-pub struct BodyTirBuilder<'t> {
-    pub partial_tir: &'t TirCtx<'t>,
-    pub lowered_ids: HashMap<NodeId, TirId>,
-    pub infcx: InferCtxt<'t>,
-}
-
 pub trait TirBuilder<'t> {
     fn arena(&self) -> &'t Bump;
     fn get_id(&self, id: NodeId) -> Option<TirId>;
@@ -148,9 +142,9 @@ impl<'t> TirBuilder<'t> for ItemTirBuilder<'t> {
         unreachable!("cannot create infer vars in `ItemTirBuilder`");
     }
 }
-impl<'t> TirBuilder<'t> for BodyTirBuilder<'t> {
+impl<'t> TirBuilder<'t> for TypeckCtxt<'_, '_, 't> {
     fn arena(&self) -> &'t Bump {
-        &self.partial_tir.arena
+        &self.tcx.arena
     }
 
     fn get_id(&self, id: NodeId) -> Option<TirId> {
@@ -158,7 +152,7 @@ impl<'t> TirBuilder<'t> for BodyTirBuilder<'t> {
     }
 
     fn get_generics(&self, id: TirId) -> &'t Generics<'t> {
-        match self.partial_tir.items.borrow().get(&id).unwrap() {
+        match self.infcx.tcx.items.borrow().get(&id).unwrap() {
             Item::Mod(_) | Item::Variant(_) | Item::Field(_) => panic!("no generics on item"),
 
             Item::Fn(f) => f.generics,
@@ -170,11 +164,11 @@ impl<'t> TirBuilder<'t> for BodyTirBuilder<'t> {
     }
 
     fn get_item(&self, id: TirId) -> &'t Item<'t> {
-        self.partial_tir.items.borrow().get(&id).unwrap()
+        self.infcx.tcx.items.borrow().get(&id).unwrap()
     }
 
     fn err(&self, err: Diagnostic<usize>) {
-        self.partial_tir.err(err)
+        self.infcx.tcx.err(err)
     }
 
     fn allow_infers(&self) -> bool {
@@ -556,7 +550,7 @@ pub fn build_bounds<'a, 't>(
     resolutions: &HashMap<NodeId, Res<NodeId>>,
     item_generics: &'t Generics<'t>,
 ) -> EarlyBinder<tir::Bounds<'t>> {
-    let clauses = bounds
+    let mut clauses = bounds
         .clauses
         .iter()
         .flat_map(|clause| match &clause.kind {
@@ -565,7 +559,7 @@ pub fn build_bounds<'a, 't>(
                 let t1 = build_ty(t1, tir, resolutions, item_generics).skip_binder();
                 let t2 = build_ty(t2, tir, resolutions, item_generics).skip_binder();
                 match *t1 {
-                    Ty::Alias(id, args) => Some(tir::Clause::AliasEq(id, args, *t2)),
+                    Ty::Alias(id, args) => Some(tir::Clause::AliasEq(id, args, t2)),
                     _ => {
                         tir.err(diag_non_alias_in_alias_eq_bound(t1_span));
                         None
@@ -584,11 +578,14 @@ pub fn build_bounds<'a, 't>(
                 Res::Local(_) => unreachable!(),
             },
         })
-        .chain(item_generics.params.iter().map(|param| {
-            let var_idx = item_generics.param_id_to_var[&param.id];
-            tir::Clause::WellFormed(Ty::Bound(DebruijnIndex(0), BoundVar(var_idx)))
-        }))
         .collect::<Vec<_>>();
+    clauses.extend(item_generics.params.iter().map(|param| {
+        let var_idx = item_generics.param_id_to_var[&param.id];
+        tir::Clause::WellFormed(
+            tir.arena()
+                .alloc(Ty::Bound(DebruijnIndex(0), BoundVar(var_idx))),
+        )
+    }));
 
     let clauses = tir.arena().alloc_slice_fill_iter(clauses);
     EarlyBinder(tir::Bounds { clauses })

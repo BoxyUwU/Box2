@@ -25,6 +25,7 @@ macro_rules! unwrap_matches {
 mod ast;
 mod parser;
 mod resolve;
+mod solve;
 mod tir;
 mod tokenize;
 mod typeck;
