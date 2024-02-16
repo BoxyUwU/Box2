@@ -305,15 +305,21 @@ impl<'t> FallibleTypeFolder<'t> for Generalizer<'_, 't> {
                 }
             }
 
-            Ty::Alias(id, args) => match args.try_fold_with(self) {
-                Ok(args) => Ok(self.infcx.tcx().arena.alloc(Ty::Alias(id, args))),
-                Err(_) if self.in_alias == false => Ok(self
-                    .infcx
-                    .tcx()
-                    .arena
-                    .alloc(Ty::Infer(self.infcx.new_var(Span::new(0..0))))),
-                Err(_) => Err(()),
-            },
+            Ty::Alias(id, args) => {
+                let old_in_alias = self.in_alias;
+                self.in_alias = true;
+                let r = match args.try_fold_with(self) {
+                    Ok(args) => Ok(&*self.infcx.tcx().arena.alloc(Ty::Alias(id, args))),
+                    Err(_) if self.in_alias == false => Ok(&*self
+                        .infcx
+                        .tcx()
+                        .arena
+                        .alloc(Ty::Infer(self.infcx.new_var(Span::new(0..0))))),
+                    Err(_) => Err(()),
+                };
+                self.in_alias = old_in_alias;
+                r
+            }
             // FIXME(universes)
             Ty::Placeholder(_, _)
             | Ty::Bound(_, _)
@@ -358,10 +364,6 @@ impl<'a, 't> Equate<'a, 't> {
                     Ok(())
                 }
             },
-            // FIXME: universe errors
-            (Ty::Infer(a_id), _) => instantiate(self, a_id, b),
-            (_, Ty::Infer(b_id)) => instantiate(self, b_id, a),
-
             (alias @ Ty::Alias(_, _), ty) | (ty, alias @ Ty::Alias(_, _)) => {
                 self.goals.push(Goal {
                     bounds: self.bounds,
@@ -369,6 +371,9 @@ impl<'a, 't> Equate<'a, 't> {
                 });
                 Ok(())
             }
+
+            // FIXME: universe errors
+            (Ty::Infer(var), ty) | (ty, Ty::Infer(var)) => instantiate(self, var, ty),
 
             (
                 Ty::Placeholder(_, _) | Ty::Int | Ty::Float | Ty::Unit,
