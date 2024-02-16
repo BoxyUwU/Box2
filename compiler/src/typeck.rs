@@ -17,7 +17,7 @@ use crate::{
     tokenize::{Literal, Span},
 };
 
-use self::visit::{FallibleTypeFolder, TypeFoldable, TypeSuperFoldable};
+use self::visit::{FallibleTypeFolder, TypeFoldable, TypeFolder, TypeSuperFoldable};
 
 pub struct TypeckResults<'t> {
     pub tys: HashMap<NodeId, Ty<'t>>,
@@ -102,13 +102,23 @@ pub fn typeck_fn<'ast, 't>(
     );
 
     typeck_expr(body, tcx, &mut node_tys);
-    let infcx_errs = std::mem::take(&mut tcx.infcx.errors);
+    let infcx_errs = std::mem::take(&mut tcx.infcx.errors)
+        .into_iter()
+        .map(|err| {
+            ExpectedFound(
+                tcx.infcx.deeply_resolve_ty(err.0),
+                tcx.infcx.deeply_resolve_ty(err.1),
+                err.2,
+            )
+        })
+        .collect::<Vec<_>>();
+
     let mut node_tys = node_tys.into_iter().collect::<Vec<_>>();
     node_tys.sort_by(|(_, a), (_, b)| InferId::cmp(a, b));
 
     node_tys
         .into_iter()
-        .map(|(id, ty)| (id, tcx.infcx.resolve_ty(Ty::Infer(ty))))
+        .map(|(id, ty)| (id, tcx.infcx.deeply_resolve_ty(Ty::Infer(ty))))
         .fold(
             TypeckResults {
                 tys: HashMap::default(),
@@ -228,7 +238,28 @@ impl<'t> InferCtxt<'t> {
         id
     }
 
-    fn resolve_ty(&self, mut ty: Ty<'t>) -> Ty<'t> {
+    fn deeply_resolve_ty(&self, ty: Ty<'t>) -> Ty<'t> {
+        struct DeeplyResolve<'a, 't> {
+            infcx: &'a InferCtxt<'t>,
+        }
+        impl<'t> TypeFolder<'t> for DeeplyResolve<'_, 't> {
+            fn tcx(&self) -> &'t TirCtx<'t> {
+                self.infcx.tcx()
+            }
+
+            fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
+                let ty = self
+                    .infcx
+                    .tcx()
+                    .arena
+                    .alloc(self.infcx.shallow_resolve_ty(*ty));
+                ty.super_fold_with(self)
+            }
+        }
+        *DeeplyResolve { infcx: self }.fold_ty(&*self.tcx().arena.alloc(ty))
+    }
+
+    fn shallow_resolve_ty(&self, mut ty: Ty<'t>) -> Ty<'t> {
         loop {
             let infer = match ty {
                 Ty::Infer(inf) => inf,
@@ -272,7 +303,7 @@ struct Generalizer<'a, 't> {
 }
 impl<'a, 't> Generalizer<'a, 't> {
     fn new(infcx: &'a mut InferCtxt<'t>, var: InferId) -> Self {
-        assert_eq!(infcx.resolve_ty(Ty::Infer(var)), Ty::Infer(var));
+        assert_eq!(infcx.shallow_resolve_ty(Ty::Infer(var)), Ty::Infer(var));
 
         Self {
             infcx,
@@ -289,7 +320,7 @@ impl<'t> FallibleTypeFolder<'t> for Generalizer<'_, 't> {
     }
 
     fn try_fold_ty(&mut self, ty: &'t Ty<'t>) -> Result<&'t Ty<'t>, ()> {
-        let ty = self.infcx.resolve_ty(*ty);
+        let ty = self.infcx.shallow_resolve_ty(*ty);
 
         match ty {
             // FIXME(universes)
@@ -340,8 +371,8 @@ struct Equate<'a, 't> {
 }
 impl<'a, 't> Equate<'a, 't> {
     fn eq(&mut self, a: Ty<'t>, b: Ty<'t>) -> Result<(), NoSolution> {
-        let a = self.infcx.resolve_ty(a);
-        let b = self.infcx.resolve_ty(b);
+        let a = self.infcx.shallow_resolve_ty(a);
+        let b = self.infcx.shallow_resolve_ty(b);
 
         let instantiate = |equate: &mut Equate<'a, 't>, var: InferId, with: Ty<'t>| {
             let tcx: &TirCtx<'_> = equate.infcx.tcx();
@@ -364,6 +395,10 @@ impl<'a, 't> Equate<'a, 't> {
                     Ok(())
                 }
             },
+
+            // FIXME: universe errors
+            (Ty::Infer(var), ty) | (ty, Ty::Infer(var)) => instantiate(self, var, ty),
+
             (alias @ Ty::Alias(_, _), ty) | (ty, alias @ Ty::Alias(_, _)) => {
                 self.goals.push(Goal {
                     bounds: self.bounds,
@@ -371,9 +406,6 @@ impl<'a, 't> Equate<'a, 't> {
                 });
                 Ok(())
             }
-
-            // FIXME: universe errors
-            (Ty::Infer(var), ty) | (ty, Ty::Infer(var)) => instantiate(self, var, ty),
 
             (
                 Ty::Placeholder(_, _) | Ty::Int | Ty::Float | Ty::Unit,
@@ -541,14 +573,43 @@ pub fn typeck_expr<'ast, 't>(
             _ = tcx.eq(Ty::Float, Ty::Infer(node_tys[&this_expr.id]), span)
         }
 
-        ast::ExprKind::BinOp(_, _, _, _) => todo!(),
+        ast::ExprKind::BinOp(op, lhs, rhs, span) => {
+            let rhs_var = tcx.infcx.new_var(rhs.span());
+            node_tys.insert(rhs.id, rhs_var);
+            typeck_expr(rhs, tcx, node_tys);
+
+            if let ast::BinOp::Mutate = op {
+                let place_ty = if let ast::ExprKind::Path(_) = lhs.kind {
+                    if let Res::Local(id) = tcx.resolutions[&lhs.id] {
+                        Ty::Infer(node_tys[&id])
+                    } else {
+                        todo!();
+                        Ty::Error
+                    }
+                } else {
+                    todo!();
+                    Ty::Error
+                };
+
+                _ = tcx.eq(place_ty, Ty::Infer(rhs_var), span);
+                _ = tcx.eq(Ty::Unit, Ty::Infer(node_tys[&this_expr.id]), span);
+            } else {
+                let lhs_var = tcx.infcx.new_var(lhs.span());
+                node_tys.insert(lhs.id, lhs_var);
+                typeck_expr(lhs, tcx, node_tys);
+
+                match op {
+                    _ => todo!(),
+                }
+            }
+        }
         ast::ExprKind::UnOp(_, _, _) => todo!(),
         ast::ExprKind::FnCall(ast::FnCall { func, args, span }) => {
             let rcvr_id = tcx.infcx.new_var(func.span());
             node_tys.insert(func.id, rcvr_id);
             typeck_expr(func, tcx, node_tys);
 
-            let rcvr = tcx.infcx.resolve_ty(Ty::Infer(rcvr_id));
+            let rcvr = tcx.infcx.shallow_resolve_ty(Ty::Infer(rcvr_id));
             if let Ty::FnDef(id, fndef_args) = rcvr {
                 let func = tcx.get_item(id).unwrap_fn();
                 _ = tcx.eq(

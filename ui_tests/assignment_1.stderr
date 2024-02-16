@@ -1,0 +1,6 @@
+error: mismatched types: a:A[] b:B[]
+  ┌─ main.box:6:5
+  │
+6 │     a := new B {};
+  │     ^^^^^^^^^^^^^
+

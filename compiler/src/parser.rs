@@ -56,6 +56,7 @@ impl BinOp {
             BinOp::Dot => (13, 14),
             BinOp::Mul | BinOp::Div => (3, 4),
             BinOp::Add | BinOp::Sub => (1, 2),
+            BinOp::Mutate => (11, 0),
         }
     }
 }
@@ -79,6 +80,7 @@ impl<'a> Token<'a> {
             FwdSlash => Operator::BinOp(BinOp::Div),
             Star => Operator::BinOp(BinOp::Mul),
             Dot => Operator::BinOp(BinOp::Dot),
+            ColonEq => Operator::BinOp(BinOp::Mutate),
             LParen => Operator::UnOp(UnOp::Call),
             _ => return None,
         })
@@ -148,6 +150,7 @@ impl<'a> Token<'a> {
                 Token::RBrace => "}",
                 Token::LSquare => "[",
                 Token::RSquare => "]",
+                Token::ColonEq => ":=",
                 Token::Error => "ERROR",
 
                 Token::Ident(_) | Token::Kw(_) | Token::Literal(_) => unreachable!(),

@@ -540,6 +540,7 @@ pub enum BinOp {
     Mul,
     Div,
     Dot,
+    Mutate,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]

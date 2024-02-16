@@ -1,0 +1,42 @@
+error: mismatched types: a:Bar[?17] b:?17
+   ┌─ main.box:14:18
+   │
+14 │     eq_tys[?](a, b);
+   │                  ^
+
+error: could not infer type
+   ┌─ main.box:14:12
+   │
+14 │     eq_tys[?](a, b);
+   │            ^
+
+error: could not infer type
+   ┌─ main.box:14:12
+   │
+14 │     eq_tys[?](a, b);
+   │            ^
+
+error: could not infer type
+   ┌─ main.box:14:12
+   │
+14 │     eq_tys[?](a, b);
+   │            ^
+
+error: could not infer type
+   ┌─ main.box:14:12
+   │
+14 │     eq_tys[?](a, b);
+   │            ^
+
+error: could not infer type
+   ┌─ main.box:14:12
+   │
+14 │     eq_tys[?](a, b);
+   │            ^
+
+error: mismatched types: a:!0_0 b:()
+   ┌─ main.box:19:19
+   │
+19 │ fn mk_x[X]() -> X {}
+   │                   ^^
+

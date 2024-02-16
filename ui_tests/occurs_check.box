@@ -1,0 +1,19 @@
+type Bar[T] {
+    field: T,
+}
+
+fn foo[T](a: T) -> Bar[T] {
+    new Bar[T] { field: a }
+}
+
+fn other[T]() {
+    let a = mk_x[?]();
+    
+    let b = foo[?](a);
+    
+    eq_tys[?](a, b);
+}
+
+fn eq_tys[T](a: T, b: T) {}
+
+fn mk_x[X]() -> X {}

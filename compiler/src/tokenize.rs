@@ -110,6 +110,8 @@ pub enum Token<'a> {
     Comma,
     #[token("=")]
     Eq,
+    #[token(":=")]
+    ColonEq,
 
     #[token("(")]
     LParen,

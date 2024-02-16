@@ -1,0 +1,6 @@
+type A {}
+
+fn foo() {
+    let a = new A {};
+    a := a := new A {};
+}
