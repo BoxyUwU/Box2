@@ -1,0 +1,19 @@
+error: mismatched types: a:Baz[] b:C[]
+   ┌─ main.box:24:17
+   │  
+24 │   fn test0() -> C {
+   │ ╭─────────────────^
+25 │ │     let foo = new Foo {
+26 │ │         field1: new Bar {
+27 │ │             field2: new Baz {
+   · │
+45 │ │     foo.field1.field2
+46 │ │ }
+   │ ╰─^
+
+error: mismatched types: a:B[] b:C[]
+   ┌─ main.box:56:5
+   │
+56 │     a.field := new C {}
+   │     ^^^^^^^^^^^^^^^^^^^
+

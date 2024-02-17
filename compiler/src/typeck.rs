@@ -573,36 +573,72 @@ pub fn typeck_expr<'ast, 't>(
             _ = tcx.eq(Ty::Float, Ty::Infer(node_tys[&this_expr.id]), span)
         }
 
-        ast::ExprKind::BinOp(op, lhs, rhs, span) => {
-            let rhs_var = tcx.infcx.new_var(rhs.span());
-            node_tys.insert(rhs.id, rhs_var);
-            typeck_expr(rhs, tcx, node_tys);
-
-            if let ast::BinOp::Mutate = op {
-                let place_ty = if let ast::ExprKind::Path(_) = lhs.kind {
-                    if let Res::Local(id) = tcx.resolutions[&lhs.id] {
-                        Ty::Infer(node_tys[&id])
-                    } else {
-                        todo!();
-                        Ty::Error
-                    }
-                } else {
-                    todo!();
-                    Ty::Error
-                };
-
-                _ = tcx.eq(place_ty, Ty::Infer(rhs_var), span);
-                _ = tcx.eq(Ty::Unit, Ty::Infer(node_tys[&this_expr.id]), span);
-            } else {
+        ast::ExprKind::BinOp(op, lhs, rhs, span) => match op {
+            ast::BinOp::Dot => {
                 let lhs_var = tcx.infcx.new_var(lhs.span());
                 node_tys.insert(lhs.id, lhs_var);
                 typeck_expr(lhs, tcx, node_tys);
 
-                match op {
+                let seg = if let ast::ExprKind::Path(path) = rhs.kind {
+                    if path.segments.len() == 1 {
+                        path.segments[0]
+                    } else {
+                        todo!("{:?}", path)
+                    }
+                } else {
+                    todo!()
+                };
+
+                let mut rhs_ty = None;
+                let lhs_ty: Ty<'t> = tcx.infcx.shallow_resolve_ty(Ty::Infer(lhs_var));
+                match lhs_ty {
+                    Ty::Adt(def, args) => {
+                        let adt: &'t Adt<'t> = tcx.infcx.tcx.get_item(def).unwrap_adt();
+                        if adt.variants.len() == 1 && adt.variants[0].name.is_none() {
+                            for field in adt.variants[0].fields {
+                                if field.name == seg.ident {
+                                    rhs_ty = Some(*field.ty.instantiate(args, tcx.infcx.tcx));
+                                    break;
+                                }
+                            }
+                        } else {
+                            todo!()
+                        }
+                    }
                     _ => todo!(),
                 }
+
+                let rhs_var = tcx.infcx.new_var(rhs.span());
+                node_tys.insert(rhs.id, rhs_var);
+                if let Some(rhs_ty) = rhs_ty {
+                    _ = tcx.eq(Ty::Infer(rhs_var), rhs_ty, span);
+                    _ = tcx.eq(Ty::Infer(node_tys[&this_expr.id]), rhs_ty, span);
+                }
             }
-        }
+            ast::BinOp::Mutate => {
+                let lhs_var = tcx.infcx.new_var(lhs.span());
+                node_tys.insert(lhs.id, lhs_var);
+                typeck_expr(lhs, tcx, node_tys);
+
+                let rhs_var = tcx.infcx.new_var(rhs.span());
+                node_tys.insert(rhs.id, rhs_var);
+                typeck_expr(rhs, tcx, node_tys);
+
+                _ = tcx.eq(Ty::Infer(lhs_var), Ty::Infer(rhs_var), span);
+                _ = tcx.eq(Ty::Unit, Ty::Infer(node_tys[&this_expr.id]), span);
+            }
+            ast::BinOp::Add | ast::BinOp::Sub | ast::BinOp::Div | ast::BinOp::Mul => {
+                let lhs_var = tcx.infcx.new_var(lhs.span());
+                node_tys.insert(lhs.id, lhs_var);
+                typeck_expr(lhs, tcx, node_tys);
+
+                let rhs_var = tcx.infcx.new_var(rhs.span());
+                node_tys.insert(rhs.id, rhs_var);
+                typeck_expr(rhs, tcx, node_tys);
+
+                todo!()
+            }
+        },
         ast::ExprKind::UnOp(_, _, _) => todo!(),
         ast::ExprKind::FnCall(ast::FnCall { func, args, span }) => {
             let rcvr_id = tcx.infcx.new_var(func.span());

@@ -1,0 +1,57 @@
+type A {
+    field: B,
+}
+
+type B {
+    | One {},
+    | Two {},
+}
+
+type C {}
+
+type Foo {
+    field1: Bar,
+}
+
+type Bar {
+    field2: Baz,
+}
+
+type Baz {
+    field3: B,
+}
+
+fn test0() -> C {
+    let foo = new Foo {
+        field1: new Bar {
+            field2: new Baz {
+                field3: new B::One {},
+            },
+        },
+    };
+
+    new Foo {
+        field1: foo.field1,
+    };
+
+    new Bar {
+        field2: foo.field1.field2,
+    };
+
+    new Baz {
+        field3: foo.field1.field2.field3,
+    };
+
+    foo.field1.field2
+}
+
+fn test1() -> B {
+    let a = new A { field: new B::One {} };
+    a.field := new B::Two {};
+    a.field
+}
+
+fn test2() {
+    let a = new A { field: new B::One {} };
+    a.field := new C {}
+}
