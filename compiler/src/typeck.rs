@@ -60,6 +60,10 @@ impl<'ast, 'm, 't> visit::Visitor<'t> for FnChecker<'ast, 'm, 't> {
 pub enum TypeckError<'t> {
     ExpectedFound(ExpectedFound<'t>),
     UnconstrainedInfer(NodeId, InferId, Span),
+    NonPlaceExprInMutateOp(NodeId, Span),
+    NonIdentRhsOfDotOp(NodeId, Span),
+    NonStructTyForDotOp(Ty<'t>, Span),
+    FieldOrMethodNotFoundOnTy(Ty<'t>, String, Span),
 }
 pub fn typeck_fn<'ast, 't>(
     Fn { body, .. }: &'_ Fn<'t>,
@@ -102,14 +106,23 @@ pub fn typeck_fn<'ast, 't>(
     );
 
     typeck_expr(body, tcx, &mut node_tys);
-    let infcx_errs = std::mem::take(&mut tcx.infcx.errors)
+    let errs = std::mem::take(&mut tcx.errors)
         .into_iter()
-        .map(|err| {
-            ExpectedFound(
+        .map(|err| match err {
+            TypeckError::ExpectedFound(err) => TypeckError::ExpectedFound(ExpectedFound(
                 tcx.infcx.deeply_resolve_ty(err.0),
                 tcx.infcx.deeply_resolve_ty(err.1),
                 err.2,
-            )
+            )),
+            TypeckError::NonStructTyForDotOp(ty, span) => {
+                TypeckError::NonStructTyForDotOp(tcx.infcx.deeply_resolve_ty(ty), span)
+            }
+            TypeckError::FieldOrMethodNotFoundOnTy(ty, path, span) => {
+                TypeckError::FieldOrMethodNotFoundOnTy(tcx.infcx.deeply_resolve_ty(ty), path, span)
+            }
+            err @ (TypeckError::NonIdentRhsOfDotOp(..)
+            | TypeckError::UnconstrainedInfer(..)
+            | TypeckError::NonPlaceExprInMutateOp(..)) => err,
         })
         .collect::<Vec<_>>();
 
@@ -122,10 +135,7 @@ pub fn typeck_fn<'ast, 't>(
         .fold(
             TypeckResults {
                 tys: HashMap::default(),
-                errs: infcx_errs
-                    .into_iter()
-                    .map(TypeckError::ExpectedFound)
-                    .collect(),
+                errs,
             },
             |TypeckResults { mut tys, mut errs }, (id, ty)| {
                 match ty {
@@ -207,7 +217,6 @@ pub struct InferCtxt<'t> {
     next_infer_id: InferId,
     constraints: HashMap<InferId, Ty<'t>>,
     infer_spans: HashMap<InferId, Span>,
-    errors: Vec<ExpectedFound<'t>>,
 }
 impl<'t> Deref for InferCtxt<'t> {
     type Target = TirCtx<'t>;
@@ -223,7 +232,6 @@ impl<'t> InferCtxt<'t> {
             next_infer_id: InferId(0),
             constraints: HashMap::new(),
             infer_spans: HashMap::new(),
-            errors: Vec::new(),
         }
     }
 
@@ -278,7 +286,6 @@ impl<'t> InferCtxt<'t> {
         a: Ty<'t>,
         b: Ty<'t>,
         bounds: Bounds<'t>,
-        span: Span,
     ) -> Result<Vec<Goal<'t>>, NoSolution> {
         let mut eq = Equate {
             infcx: self,
@@ -286,10 +293,7 @@ impl<'t> InferCtxt<'t> {
             goals: vec![],
         };
         match eq.eq(a, b) {
-            Err(NoSolution) => {
-                self.errors.push(ExpectedFound(a, b, span));
-                Err(NoSolution)
-            }
+            Err(NoSolution) => Err(NoSolution),
             Ok(_) => Ok(eq.goals),
         }
     }
@@ -442,6 +446,8 @@ pub struct TypeckCtxt<'ast, 'r, 't> {
     ast: &'ast Nodes<'ast>,
     pub lowered_ids: HashMap<NodeId, TirId>,
     resolutions: &'r HashMap<NodeId, Res<NodeId>>,
+
+    pub errors: Vec<TypeckError<'t>>,
 }
 impl<'ast, 'r, 't> TypeckCtxt<'ast, 'r, 't> {
     fn new(
@@ -462,13 +468,24 @@ impl<'ast, 'r, 't> TypeckCtxt<'ast, 'r, 't> {
             ast,
             lowered_ids,
             resolutions,
+
+            errors: vec![],
         }
     }
 
     fn eq(&mut self, a: Ty<'t>, b: Ty<'t>, span: Span) -> Result<(), NoSolution> {
-        let goals = self.infcx.eq(a, b, self.bounds, span)?;
-        self.goals.extend(goals);
-        Ok(())
+        let result = self.infcx.eq(a, b, self.bounds);
+        match result {
+            Ok(goals) => {
+                self.goals.extend(goals);
+                Ok(())
+            }
+            Err(NoSolution) => {
+                self.errors
+                    .push(TypeckError::ExpectedFound(ExpectedFound(a, b, span)));
+                Err(NoSolution)
+            }
+        }
     }
 }
 
@@ -580,14 +597,15 @@ pub fn typeck_expr<'ast, 't>(
                 typeck_expr(lhs, tcx, node_tys);
 
                 let seg = if let ast::ExprKind::Path(path) = rhs.kind {
-                    if path.segments.len() == 1 {
-                        path.segments[0]
-                    } else {
-                        todo!("{:?}", path)
-                    }
+                    path.segments.get(0)
                 } else {
-                    todo!()
+                    None
                 };
+
+                if seg.is_none() {
+                    tcx.errors
+                        .push(TypeckError::NonIdentRhsOfDotOp(rhs.id, rhs.span()));
+                }
 
                 let mut rhs_ty = None;
                 let lhs_ty: Ty<'t> = tcx.infcx.shallow_resolve_ty(Ty::Infer(lhs_var));
@@ -595,17 +613,29 @@ pub fn typeck_expr<'ast, 't>(
                     Ty::Adt(def, args) => {
                         let adt: &'t Adt<'t> = tcx.infcx.tcx.get_item(def).unwrap_adt();
                         if adt.variants.len() == 1 && adt.variants[0].name.is_none() {
-                            for field in adt.variants[0].fields {
-                                if field.name == seg.ident {
-                                    rhs_ty = Some(*field.ty.instantiate(args, tcx.infcx.tcx));
-                                    break;
+                            let field = adt.variants[0]
+                                .fields
+                                .iter()
+                                .find(|field| Some(field.name) == seg.map(|seg| seg.ident));
+                            match field {
+                                Some(field) => {
+                                    rhs_ty = Some(*field.ty.instantiate(args, tcx.infcx.tcx))
                                 }
-                            }
+                                None => tcx.errors.push(TypeckError::FieldOrMethodNotFoundOnTy(
+                                    lhs_ty,
+                                    seg.map(|seg| seg.ident.to_string())
+                                        .unwrap_or(String::new()),
+                                    this_expr.span(),
+                                )),
+                            };
                         } else {
-                            todo!()
+                            tcx.errors
+                                .push(TypeckError::NonStructTyForDotOp(lhs_ty, lhs.span()))
                         }
                     }
-                    _ => todo!(),
+                    _ => tcx
+                        .errors
+                        .push(TypeckError::NonStructTyForDotOp(lhs_ty, lhs.span())),
                 }
 
                 let rhs_var = tcx.infcx.new_var(rhs.span());
@@ -616,6 +646,23 @@ pub fn typeck_expr<'ast, 't>(
                 }
             }
             ast::BinOp::Mutate => {
+                match lhs.kind {
+                    ast::ExprKind::Path(path) if path.segments.len() == 1 => (),
+                    ast::ExprKind::BinOp(ast::BinOp::Dot, _, _, _) => (),
+
+                    ast::ExprKind::Let(_, _, _)
+                    | ast::ExprKind::Block(_, _)
+                    | ast::ExprKind::BinOp(_, _, _, _)
+                    | ast::ExprKind::UnOp(_, _, _)
+                    | ast::ExprKind::Lit(_, _)
+                    | ast::ExprKind::Path(_)
+                    | ast::ExprKind::FnCall(_)
+                    | ast::ExprKind::TypeInit(_)
+                    | ast::ExprKind::FieldInit(_) => tcx
+                        .errors
+                        .push(TypeckError::NonPlaceExprInMutateOp(lhs.id, lhs.span())),
+                }
+
                 let lhs_var = tcx.infcx.new_var(lhs.span());
                 node_tys.insert(lhs.id, lhs_var);
                 typeck_expr(lhs, tcx, node_tys);

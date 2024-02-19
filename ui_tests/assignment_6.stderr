@@ -1,0 +1,6 @@
+error: invalid place expression
+   ┌─ main.box:17:5
+   │
+17 │     bar() := bar();
+   │     ^^^^^
+

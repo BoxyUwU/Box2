@@ -1,0 +1,12 @@
+error: expected expression to have the type of a struct not `bar[]`
+  ┌─ main.box:4:5
+  │
+4 │     bar.field
+  │     ^^^
+
+error: could not infer type
+  ┌─ main.box:4:9
+  │
+4 │     bar.field
+  │         ^^^^^
+

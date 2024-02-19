@@ -1,0 +1,18 @@
+error: not an identifier
+   ┌─ main.box:12:7
+   │
+12 │     a.1
+   │       ^
+
+error: field or method with name `` not present on ty `A[]`
+   ┌─ main.box:12:5
+   │
+12 │     a.1
+   │     ^^^
+
+error: could not infer type
+   ┌─ main.box:12:7
+   │
+12 │     a.1
+   │       ^
+

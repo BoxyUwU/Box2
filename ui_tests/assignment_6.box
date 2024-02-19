@@ -1,0 +1,19 @@
+type A {
+    field: B,
+}
+
+type B {
+    | One {},
+    | Two {},
+}
+
+fn bar() -> A {
+    new A {
+        field: new B::Two {}
+    }
+}
+
+fn foo() -> B {
+    bar() := bar();
+    new B::One {}
+}

@@ -1,0 +1,18 @@
+error: expected expression to have the type of a struct not `B[]`
+   ┌─ main.box:11:5
+   │
+11 │     new B::Two {}.field;
+   │     ^^^^^^^^^^^^^
+
+error: could not infer type
+   ┌─ main.box:11:5
+   │
+11 │     new B::Two {}.field;
+   │     ^^^^^^^^^^^^^^^^^^^
+
+error: could not infer type
+   ┌─ main.box:11:19
+   │
+11 │     new B::Two {}.field;
+   │                   ^^^^^
+

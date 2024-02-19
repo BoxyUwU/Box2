@@ -1,0 +1,12 @@
+error: field or method with name `other` not present on ty `A[]`
+   ┌─ main.box:12:5
+   │
+12 │     a.other := new B::Two {};
+   │     ^^^^^^^
+
+error: could not infer type
+   ┌─ main.box:12:7
+   │
+12 │     a.other := new B::Two {};
+   │       ^^^^^
+

@@ -1,0 +1,14 @@
+type A {
+    field: B,
+}
+
+type B {
+    | One {},
+    | Two {},
+}
+
+fn foo() -> B {
+    let a = new A { field: new B::One {} };
+    a.other := new B::Two {};
+    a.field
+}

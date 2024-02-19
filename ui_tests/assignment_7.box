@@ -1,0 +1,12 @@
+type B {
+    | One {},
+    | Two {},
+}
+
+fn bar() -> B {
+    new B::One {}
+}
+
+fn foo() {
+    new B::Two {}.field;
+}

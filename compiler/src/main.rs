@@ -95,6 +95,37 @@ fn main() {
                     .with_labels(vec![Label::primary(0, span)]);
                 codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
             }
+            TypeckError::NonPlaceExprInMutateOp(_, span) => {
+                let diag = Diagnostic::error()
+                    .with_message(format!("invalid place expression",))
+                    .with_labels(vec![Label::primary(0, span)]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+            }
+            TypeckError::NonIdentRhsOfDotOp(_, span) => {
+                let diag = Diagnostic::error()
+                    .with_message(format!("not an identifier",))
+                    .with_labels(vec![Label::primary(0, span)]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+            }
+            TypeckError::NonStructTyForDotOp(ty, span) => {
+                let diag = Diagnostic::error()
+                    .with_message(format!(
+                        "expected expression to have the type of a struct not `{}`",
+                        ty.pretty(&tir_ctx)
+                    ))
+                    .with_labels(vec![Label::primary(0, span)]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+            }
+            TypeckError::FieldOrMethodNotFoundOnTy(ty, ident, span) => {
+                let diag = Diagnostic::error()
+                    .with_message(format!(
+                        "field or method with name `{}` not present on ty `{}`",
+                        ident,
+                        ty.pretty(&tir_ctx)
+                    ))
+                    .with_labels(vec![Label::primary(0, span)]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+            }
         }
     }
 
