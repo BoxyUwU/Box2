@@ -52,7 +52,7 @@ pub struct BodySource<'t> {
     pub expr: ast::NodeId,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct TirId(usize);
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]

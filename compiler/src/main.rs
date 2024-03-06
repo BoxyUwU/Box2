@@ -77,7 +77,9 @@ fn main() {
     };
     tir::visit::super_visit_mod(&mut checker, tir);
 
-    for e in checker.typeck_results.into_iter().flat_map(|(_, r)| r.errs) {
+    let mut results = checker.typeck_results.into_iter().collect::<Vec<_>>();
+    results.sort_by(|a, b| Ord::cmp(&a.0, &b.0));
+    for e in results.into_iter().flat_map(|(_, r)| r.errs) {
         match e {
             TypeckError::ExpectedFound(typeck::ExpectedFound(a, b, span)) => {
                 let diag = Diagnostic::error()
