@@ -79,6 +79,15 @@ impl Rib {
                 .collect(),
         }
     }
+
+    fn from_params(params: &[&'_ GenericParam<'_>]) -> Rib {
+        Rib {
+            bindings: params
+                .iter()
+                .map(|param| (param.name.to_owned(), param.id))
+                .collect(),
+        }
+    }
 }
 
 impl<'ast> Resolver<'ast> {
@@ -120,6 +129,9 @@ impl<'ast> Resolver<'ast> {
 
     pub fn resolve_clause(&mut self, clause: &Clause<'_>) {
         match &clause.kind {
+            ClauseKind::Bound(binder) => self.with_rib(Rib::from_params(binder.vars), |this| {
+                this.resolve_clause(binder.value)
+            }),
             ClauseKind::AliasEq(t1, t2) => {
                 self.resolve_ty(t1);
                 self.resolve_ty(t2);

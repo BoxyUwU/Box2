@@ -32,6 +32,10 @@ pub trait Visitor: Sized {
     fn visit_impl(&mut self, impl_: &Impl<'_>) {
         super_visit_impl(self, impl_)
     }
+
+    fn visit_bounds(&mut self, bounds: &Bounds<'_>) {
+        super_visit_bounds(self, bounds)
+    }
 }
 
 pub fn super_visit_item<V: Visitor>(v: &mut V, item: &Item<'_>) {
@@ -72,9 +76,12 @@ pub fn super_visit_variant_def<V: Visitor>(v: &mut V, def: &VariantDef<'_>) {
 
 pub fn super_visit_field_def<V: Visitor>(_v: &mut V, _def: &FieldDef<'_>) {}
 
-pub fn super_visit_type_alias<V: Visitor>(_v: &mut V, _alias: &TypeAlias<'_>) {}
+pub fn super_visit_type_alias<V: Visitor>(v: &mut V, alias: &TypeAlias<'_>) {
+    v.visit_bounds(&alias.bounds)
+}
 
 pub fn super_visit_fn<V: Visitor>(v: &mut V, func: &Fn<'_>) {
+    v.visit_bounds(&func.bounds);
     if let Some(expr) = func.body {
         v.visit_expr(expr);
     }
@@ -90,13 +97,19 @@ pub fn super_visit_assoc_item<V: Visitor>(v: &mut V, assoc_item: &AssocItem<'_>)
 }
 
 pub fn super_visit_trait<V: Visitor>(v: &mut V, trait_: &Trait<'_>) {
+    v.visit_bounds(&trait_.bounds);
     for assoc_item in trait_.assoc_items {
         super_visit_assoc_item(v, assoc_item)
     }
 }
 
 pub fn super_visit_impl<V: Visitor>(v: &mut V, impl_: &Impl<'_>) {
+    v.visit_bounds(&impl_.bounds);
     for assoc_item in impl_.assoc_items {
         super_visit_assoc_item(v, assoc_item)
     }
+}
+
+pub fn super_visit_bounds<V: Visitor>(_v: &mut V, _bounds: &Bounds<'_>) {
+    // lol
 }

@@ -17,7 +17,10 @@ use crate::{
     tokenize::{Literal, Span},
 };
 
-use self::visit::{FallibleTypeFolder, TypeFoldable, TypeFolder, TypeSuperFoldable};
+use self::{
+    building::InScopeBinders,
+    visit::{FallibleTypeFolder, TypeFoldable, TypeFolder, TypeSuperFoldable},
+};
 
 pub struct TypeckResults<'t> {
     pub tys: HashMap<NodeId, Ty<'t>>,
@@ -42,13 +45,23 @@ impl<'ast, 'm, 't> visit::Visitor<'t> for FnChecker<'ast, 'm, 't> {
         let mut typeck_ctx = TypeckCtxt::new(
             self.tir_ctx,
             f.bounds.instantiate_root_placeholders(self.tir_ctx),
-            f.generics,
             self.ast,
             std::mem::take(&mut self.lowered_ids),
             self.resolutions,
         );
 
-        let r = typeck_fn(f, &self.body_sources, &mut typeck_ctx);
+        let mut generics = vec![f.generics];
+        while let Some(parent) = generics.last().unwrap().parent {
+            generics.push(typeck_ctx.get_generics(parent));
+        }
+        let mut in_scope_binders = InScopeBinders::new(generics.into_iter().rev());
+
+        let r = typeck_fn(
+            f,
+            &self.body_sources,
+            &mut in_scope_binders,
+            &mut typeck_ctx,
+        );
         self.typeck_results.insert(f.id, r);
         drop(std::mem::replace(
             &mut self.lowered_ids,
@@ -68,6 +81,7 @@ pub enum TypeckError<'t> {
 pub fn typeck_fn<'ast, 't>(
     Fn { body, .. }: &'_ Fn<'t>,
     body_sources: &HashMap<BodyId, BodySource<'t>>,
+    in_scope_binders: &mut InScopeBinders,
     tcx: &mut TypeckCtxt<'ast, '_, 't>,
 ) -> TypeckResults<'t> {
     // FIXME: param tys wf
@@ -105,7 +119,7 @@ pub fn typeck_fn<'ast, 't>(
         ret_ty_span,
     );
 
-    typeck_expr(body, tcx, &mut node_tys);
+    typeck_expr(body, tcx, in_scope_binders, &mut node_tys);
     let errs = std::mem::take(&mut tcx.errors)
         .into_iter()
         .map(|err| match err {
@@ -440,7 +454,6 @@ impl<'a, 't> Equate<'a, 't> {
 pub struct TypeckCtxt<'ast, 'r, 't> {
     pub infcx: InferCtxt<'t>,
     bounds: Bounds<'t>,
-    generics: &'t Generics<'t>,
     goals: Vec<Goal<'t>>,
 
     ast: &'ast Nodes<'ast>,
@@ -453,7 +466,6 @@ impl<'ast, 'r, 't> TypeckCtxt<'ast, 'r, 't> {
     fn new(
         tcx: &'t TirCtx<'t>,
         bounds: Bounds<'t>,
-        generics: &'t Generics<'t>,
         ast: &'ast Nodes<'ast>,
         lowered_ids: HashMap<NodeId, TirId>,
         resolutions: &'r HashMap<NodeId, Res<NodeId>>,
@@ -463,7 +475,6 @@ impl<'ast, 'r, 't> TypeckCtxt<'ast, 'r, 't> {
         TypeckCtxt {
             infcx,
             bounds,
-            generics,
             goals: Vec::new(),
             ast,
             lowered_ids,
@@ -504,6 +515,7 @@ impl<'t> DerefMut for TypeckCtxt<'_, '_, 't> {
 pub fn typeck_expr<'ast, 't>(
     this_expr: &ast::Expr<'_>,
     tcx: &mut TypeckCtxt<'ast, '_, 't>,
+    in_scope_binders: &mut InScopeBinders,
     node_tys: &mut HashMap<NodeId, InferId>,
 ) {
     match this_expr.kind {
@@ -515,14 +527,14 @@ pub fn typeck_expr<'ast, 't>(
             let rhs_var = tcx.infcx.new_var(rhs.span());
             node_tys.insert(rhs.id, rhs_var);
             _ = tcx.eq(Ty::Infer(pat_var), Ty::Infer(rhs_var), span);
-            typeck_expr(rhs, tcx, node_tys);
+            typeck_expr(rhs, tcx, in_scope_binders, node_tys);
         }
         ast::ExprKind::Block(stmts, block_span) => {
             // fixme  block layout is fucky
             for (expr, _) in stmts {
                 let var = tcx.infcx.new_var(expr.span());
                 node_tys.insert(expr.id, var);
-                typeck_expr(expr, tcx, node_tys);
+                typeck_expr(expr, tcx, in_scope_binders, node_tys);
             }
 
             match stmts.last() {
@@ -551,7 +563,7 @@ pub fn typeck_expr<'ast, 't>(
                 _ => unreachable!(),
             };
             let id = tcx.get_id(id).unwrap();
-            let (_, args) = build_args_for_path(&path, tcx, tcx.resolutions, tcx.generics);
+            let (_, args) = build_args_for_path(&path, tcx, tcx.resolutions, in_scope_binders);
             let args = args.instantiate_root_placeholders(tcx.tcx());
             _ = tcx.eq(Ty::Adt(id, args), Ty::Infer(node_tys[&this_expr.id]), span);
 
@@ -567,15 +579,19 @@ pub fn typeck_expr<'ast, 't>(
                 let field_def = tcx.get_item(tcx.get_id(field_id).unwrap()).unwrap_field();
                 let field_ty = field_def.ty.instantiate(args, tcx.tcx());
                 _ = tcx.eq(*field_ty, Ty::Infer(var), field_init.span);
-                typeck_expr(field_init.expr, tcx, node_tys);
+                typeck_expr(field_init.expr, tcx, in_scope_binders, node_tys);
             }
         }
         ast::ExprKind::Path(path @ ast::Path { span, .. }) => {
             let res_ty = match tcx.resolutions[&this_expr.id] {
                 Res::Local(id) => Ty::Infer(node_tys[&id]),
                 Res::Def(DefKind::Func, _) => {
-                    let (id, args) =
-                        building::build_args_for_path(&path, tcx, tcx.resolutions, tcx.generics);
+                    let (id, args) = building::build_args_for_path(
+                        &path,
+                        tcx,
+                        tcx.resolutions,
+                        in_scope_binders,
+                    );
                     let args = args.instantiate_root_placeholders(tcx.tcx());
                     Ty::FnDef(id, args)
                 }
@@ -594,7 +610,7 @@ pub fn typeck_expr<'ast, 't>(
             ast::BinOp::Dot => {
                 let lhs_var = tcx.infcx.new_var(lhs.span());
                 node_tys.insert(lhs.id, lhs_var);
-                typeck_expr(lhs, tcx, node_tys);
+                typeck_expr(lhs, tcx, in_scope_binders, node_tys);
 
                 let seg = if let ast::ExprKind::Path(path) = rhs.kind {
                     path.segments.get(0)
@@ -665,11 +681,11 @@ pub fn typeck_expr<'ast, 't>(
 
                 let lhs_var = tcx.infcx.new_var(lhs.span());
                 node_tys.insert(lhs.id, lhs_var);
-                typeck_expr(lhs, tcx, node_tys);
+                typeck_expr(lhs, tcx, in_scope_binders, node_tys);
 
                 let rhs_var = tcx.infcx.new_var(rhs.span());
                 node_tys.insert(rhs.id, rhs_var);
-                typeck_expr(rhs, tcx, node_tys);
+                typeck_expr(rhs, tcx, in_scope_binders, node_tys);
 
                 _ = tcx.eq(Ty::Infer(lhs_var), Ty::Infer(rhs_var), span);
                 _ = tcx.eq(Ty::Unit, Ty::Infer(node_tys[&this_expr.id]), span);
@@ -677,11 +693,11 @@ pub fn typeck_expr<'ast, 't>(
             ast::BinOp::Add | ast::BinOp::Sub | ast::BinOp::Div | ast::BinOp::Mul => {
                 let lhs_var = tcx.infcx.new_var(lhs.span());
                 node_tys.insert(lhs.id, lhs_var);
-                typeck_expr(lhs, tcx, node_tys);
+                typeck_expr(lhs, tcx, in_scope_binders, node_tys);
 
                 let rhs_var = tcx.infcx.new_var(rhs.span());
                 node_tys.insert(rhs.id, rhs_var);
-                typeck_expr(rhs, tcx, node_tys);
+                typeck_expr(rhs, tcx, in_scope_binders, node_tys);
 
                 todo!()
             }
@@ -690,7 +706,7 @@ pub fn typeck_expr<'ast, 't>(
         ast::ExprKind::FnCall(ast::FnCall { func, args, span }) => {
             let rcvr_id = tcx.infcx.new_var(func.span());
             node_tys.insert(func.id, rcvr_id);
-            typeck_expr(func, tcx, node_tys);
+            typeck_expr(func, tcx, in_scope_binders, node_tys);
 
             let rcvr = tcx.infcx.shallow_resolve_ty(Ty::Infer(rcvr_id));
             if let Ty::FnDef(id, fndef_args) = rcvr {
@@ -714,7 +730,7 @@ pub fn typeck_expr<'ast, 't>(
                         *param.ty.instantiate(fndef_args, tcx.tcx()),
                         arg.span(),
                     );
-                    typeck_expr(arg, tcx, node_tys);
+                    typeck_expr(arg, tcx, in_scope_binders, node_tys);
                 }
             } else {
                 let err = diag_fn_call_on_non_fn(tcx.tcx(), rcvr, func.span());

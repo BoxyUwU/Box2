@@ -414,28 +414,42 @@ pub fn parse_opt_generic_params<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
 ) -> Result<Generics<'a>, Diagnostic<usize>> {
-    let mut params = vec![];
-    if let Ok(_) = tok.next_if(Token::LSquare) {
-        while let Err(_) = tok.next_if(Token::RSquare) {
-            let (ident, span) = tok
-                .next_if_ident()
-                .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
-            let gen_param = nodes.push_generic_param(|id| GenericParam {
-                id,
-                name: ident,
-                name_span: span,
-                kind: GenericParamKind::Type,
-            });
-            params.push(gen_param);
+    if let Err(_) = tok.peek_if(Token::LSquare) {
+        Ok(Generics { params: &[] })
+    } else {
+        parse_generic_params(tok, nodes)
+    }
+}
 
-            let ate_comma = tok.next_if(Token::Comma);
-            if ate_comma.is_err() && tok.peek_if(Token::RSquare).is_err() {
-                let (found, span) = tok
-                    .peek()
-                    .map(|(found, span)| (*found, *span))
-                    .unwrap_or((Token::Error, Span::new(0..0)));
-                return Err(diag_expected_found("`,` or `]`", found, span));
-            }
+pub fn parse_generic_params<'a>(
+    tok: &mut Tokenizer<'a>,
+    nodes: &'a Nodes<'a>,
+) -> Result<Generics<'a>, Diagnostic<usize>> {
+    let mut params = vec![];
+
+    if let Err((found, span)) = tok.next_if(Token::LSquare) {
+        return Err(diag_expected_found("[", found, span));
+    }
+
+    while let Err(_) = tok.next_if(Token::RSquare) {
+        let (ident, span) = tok
+            .next_if_ident()
+            .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
+        let gen_param = nodes.push_generic_param(|id| GenericParam {
+            id,
+            name: ident,
+            name_span: span,
+            kind: GenericParamKind::Type,
+        });
+        params.push(gen_param);
+
+        let ate_comma = tok.next_if(Token::Comma);
+        if ate_comma.is_err() && tok.peek_if(Token::RSquare).is_err() {
+            let (found, span) = tok
+                .peek()
+                .map(|(found, span)| (*found, *span))
+                .unwrap_or((Token::Error, Span::new(0..0)));
+            return Err(diag_expected_found("`,` or `]`", found, span));
         }
     }
 
@@ -1021,31 +1035,48 @@ pub fn parse_bounds<'a>(
     let mut clauses = vec![];
 
     while tok.peek_if(Token::RBrace).is_err() {
+        let opt_bound_clause_vars = if let Ok((_, span)) = tok.next_if(Token::Kw(Kw::For)) {
+            Some((parse_generic_params(tok, nodes)?.params, span))
+        } else {
+            None
+        };
+
         let path_or_ty = parse_ty(tok, nodes)?;
 
-        match tok.next_if(Token::Arrow) {
+        let clause = match tok.next_if(Token::Arrow) {
             Ok(_) => {
                 let ty = parse_ty(tok, nodes)?;
-                let clause = *nodes.push_clause(|id| Clause {
+                nodes.push_clause(|id| Clause {
                     id,
                     span: Span::join(path_or_ty.span, ty.span),
                     kind: ClauseKind::AliasEq(*path_or_ty, *ty),
-                });
-                clauses.push(clause);
+                })
             }
             Err(_) => {
                 let path = match path_or_ty.kind {
                     TyKind::Path(path) => path,
                     _ => unreachable!(),
                 };
-                let clause = *nodes.push_clause(|id| Clause {
+                nodes.push_clause(|id| Clause {
                     id,
                     span: path.span,
                     kind: ClauseKind::Trait(path),
-                });
-                clauses.push(clause);
+                })
             }
-        }
+        };
+
+        let clause = match opt_bound_clause_vars {
+            Some((vars, span)) => nodes.push_clause(|id| Clause {
+                id,
+                span: span.join(clause.span),
+                kind: ClauseKind::Bound(Binder {
+                    vars,
+                    value: clause,
+                }),
+            }),
+            None => clause,
+        };
+        clauses.push(*clause);
 
         match tok.next_if(Token::Comma) {
             Ok(_) => continue,

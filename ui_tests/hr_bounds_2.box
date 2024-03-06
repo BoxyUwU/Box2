@@ -1,0 +1,21 @@
+trait Trait[T, U, V] {
+    type Assoc;
+}
+
+trait Other[T] {
+    fn bar[U](a: T, b: U)
+    where {
+        for[V] Trait[T, U, V]
+    };
+}
+
+type Foo {}
+
+impl[T] Other[T] {
+    fn bar[U](a: T, b: U)
+    where {
+        for[V] Trait[T, U, V]::Assoc -> Foo,
+    } {
+
+    }
+}

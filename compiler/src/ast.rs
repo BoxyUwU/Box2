@@ -213,6 +213,13 @@ pub enum Visibility {
     Priv,
     Pub,
 }
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Binder<'a, T> {
+    pub value: T,
+    pub vars: &'a [&'a GenericParam<'a>],
+}
+
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Ty<'a> {
     pub id: NodeId,
@@ -342,12 +349,12 @@ pub struct Module<'a> {
     pub items: &'a [&'a Item<'a>],
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Generics<'a> {
     pub params: &'a [&'a GenericParam<'a>],
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct GenericParam<'a> {
     pub id: NodeId,
     pub name: &'a str,
@@ -355,7 +362,7 @@ pub struct GenericParam<'a> {
     pub kind: GenericParamKind,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum GenericParamKind {
     Type,
 }
@@ -472,6 +479,7 @@ pub struct Clause<'a> {
 
 #[derive(Copy, Clone, Debug)]
 pub enum ClauseKind<'a> {
+    Bound(Binder<'a, &'a Clause<'a>>),
     AliasEq(Ty<'a>, Ty<'a>),
     Trait(Path<'a>),
 }

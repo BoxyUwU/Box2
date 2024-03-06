@@ -147,6 +147,17 @@ impl<T> EarlyBinder<T> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Binder<'t, T> {
+    value: T,
+    vars: &'t [BoundVarKind],
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum BoundVarKind {
+    Ty,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Ty<'t> {
     Unit,
     Infer(InferId),
@@ -386,6 +397,7 @@ pub struct Bounds<'t> {
 
 #[derive(Debug, Copy, Clone)]
 pub enum Clause<'t> {
+    Bound(Binder<'t, &'t Clause<'t>>),
     AliasEq(TirId, GenArgs<'t>, &'t Ty<'t>),
     Trait(TirId, GenArgs<'t>),
     WellFormed(&'t Ty<'t>),

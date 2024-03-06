@@ -218,6 +218,7 @@ impl<'t> TypeFoldable<'t> for GenArg<'t> {
 impl<'t> TypeVisitable<'t> for Clause<'t> {
     fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
         match self {
+            Clause::Bound(binder) => binder.value.visit_with(v),
             Clause::AliasEq(_, args, ty) => {
                 args.visit_with(v);
                 ty.visit_with(v);
@@ -234,6 +235,10 @@ impl<'t> TypeVisitable<'t> for Clause<'t> {
 impl<'t> TypeFoldable<'t> for Clause<'t> {
     fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
         Ok(match self {
+            Clause::Bound(binder) => Clause::Bound(Binder {
+                value: v.tcx().arena.alloc(binder.value.try_fold_with(v)?),
+                vars: binder.vars,
+            }),
             Clause::AliasEq(id, args, ty) => {
                 Clause::AliasEq(id, args.try_fold_with(v)?, ty.try_fold_with(v)?)
             }

@@ -181,6 +181,87 @@ impl<'t> TirBuilder<'t> for TypeckCtxt<'_, '_, 't> {
     }
 }
 
+pub struct InScopeBinders {
+    binders: Vec<HashMap<TirId, u32>>,
+}
+
+impl InScopeBinders {
+    pub fn new<'a, 't: 'a>(item_generics: impl IntoIterator<Item = &'a Generics<'t>>) -> Self {
+        Self {
+            binders: item_generics
+                .into_iter()
+                .map(|generics| generics.param_id_to_var.clone())
+                .collect(),
+        }
+    }
+
+    fn enter_generics<'t, B: TirBuilder<'t>, T>(
+        &mut self,
+        tcx: &mut B,
+        item: TirId,
+        f: impl FnOnce(&mut InScopeBinders, &mut B, &'t Generics<'t>) -> T,
+    ) -> T {
+        let generics = tcx.get_generics(item);
+        self.binders.push(generics.param_id_to_var.clone());
+        let r = f(self, tcx, generics);
+        self.binders.pop();
+        r
+    }
+
+    fn try_lower_binder<'t, B: TirBuilder<'t>, T, U>(
+        &mut self,
+        tcx: &mut B,
+        ast_binder: ast::Binder<'_, T>,
+        f: impl FnOnce(&mut InScopeBinders, &mut B, T) -> Option<U>,
+    ) -> Option<Binder<'t, U>> {
+        self.binders.push(
+            ast_binder
+                .vars
+                .iter()
+                .enumerate()
+                .map(|(n, var)| (tcx.get_id(var.id).unwrap(), n as u32))
+                .collect(),
+        );
+
+        let lowered_value = f(self, tcx, ast_binder.value);
+
+        self.binders.pop();
+
+        Some(Binder {
+            value: lowered_value?,
+            vars: tcx
+                .arena()
+                .alloc_slice_fill_iter(ast_binder.vars.iter().map(|var| match var.kind {
+                    ast::GenericParamKind::Type => BoundVarKind::Ty,
+                })),
+        })
+    }
+
+    fn lower_binder<'t, B: TirBuilder<'t>, T, U>(
+        &mut self,
+        tcx: &mut B,
+        ast_binder: ast::Binder<'_, T>,
+        f: impl FnOnce(&mut InScopeBinders, &mut B, T) -> U,
+    ) -> Binder<'t, U> {
+        self.try_lower_binder(tcx, ast_binder, |a, b, c| Some(f(a, b, c)))
+            .unwrap()
+    }
+
+    fn bound_var_for_param(&self, param: TirId) -> (DebruijnIndex, BoundVar) {
+        self.binders
+            .iter()
+            .rev()
+            .enumerate()
+            .find_map(|(depth, var_map)| {
+                Some((
+                    DebruijnIndex(depth as u32),
+                    BoundVar(*(var_map.get(&param)?) as u32),
+                ))
+            })
+            .unwrap_or_else(|| panic!("param {:?} was resolved to something not in scope", param))
+    }
+}
+
 pub fn build<'a, 't>(
     ast: &'a Nodes<'a>,
     root: NodeId,
@@ -199,10 +280,13 @@ pub fn build<'a, 't>(
     }
 
     impl<'t> EarlyTirBuild<'t> {
-        fn push_generics(&mut self, id: TirId, generics: &ast::Generics<'_>) {
-            for param in generics.params {
+        fn register_params(&mut self, params: &[&ast::GenericParam<'_>]) {
+            for param in params {
                 self.tir_builder.new_lowered_tir_id(param.id);
             }
+        }
+        fn push_generics(&mut self, id: TirId, generics: &ast::Generics<'_>) {
+            self.register_params(generics.params);
             let generics = build_generics(
                 *generics,
                 id,
@@ -277,6 +361,14 @@ pub fn build<'a, 't>(
             ast::visit::super_visit_impl(self, impl_);
             self.pop_generics();
         }
+
+        fn visit_bounds(&mut self, bounds: &ast::Bounds<'_>) {
+            for clause in bounds.clauses {
+                if let ast::ClauseKind::Bound(binder) = clause.kind {
+                    self.register_params(binder.vars);
+                }
+            }
+        }
     }
 
     let module = ast.get(root).unwrap_mod();
@@ -347,7 +439,7 @@ pub fn build_ty<'t>(
     ty: &ast::Ty,
     tcx: &mut impl TirBuilder<'t>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
-    item_generics: &Generics<'t>,
+    item_generics: &mut InScopeBinders,
 ) -> EarlyBinder<&'t Ty<'t>> {
     match ty.kind {
         ast::TyKind::Infer => match tcx.allow_infers() {
@@ -374,11 +466,8 @@ pub fn build_ty<'t>(
                 }
                 Res::Def(DefKind::GenericParam, id) => {
                     let tir_id = tcx.get_id(id).unwrap();
-                    let var_idx = item_generics.param_id_to_var[&tir_id];
-                    EarlyBinder(
-                        tcx.arena()
-                            .alloc(Ty::Bound(DebruijnIndex(0), BoundVar(var_idx))),
-                    )
+                    let (debruijn_idx, bound_var) = item_generics.bound_var_for_param(tir_id);
+                    EarlyBinder(tcx.arena().alloc(Ty::Bound(debruijn_idx, bound_var)))
                 }
                 Res::Def(DefKind::Variant, _) => {
                     tcx.err(diag_unexpected_res_of_path_ty(path.span, "a variant"));
@@ -407,7 +496,7 @@ pub fn build_args_for_path<'t>(
     path: &ast::Path<'_>,
     tcx: &mut impl TirBuilder<'t>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
-    generics: &Generics<'t>,
+    generics: &mut InScopeBinders,
 ) -> (TirId, EarlyBinder<GenArgs<'t>>) {
     let mut args = vec![];
 
@@ -428,9 +517,9 @@ pub fn build_path_seg<'t, T: TirBuilder<'t>>(
     seg: ast::PathSeg<'_>,
     tcx: &mut T,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
-    generics: &Generics<'t>,
+    generics: &mut InScopeBinders,
 ) -> EarlyBinder<&'t PathSeg<'t>> {
-    let lower_args = |tcx: &mut T, args: ast::GenArgs<'_>| {
+    let lower_args = |tcx: &mut T, generics: &mut InScopeBinders, args: ast::GenArgs<'_>| {
         GenArgs(
             tcx.arena()
                 .alloc_slice_fill_iter(args.0.iter().map(|arg| match arg {
@@ -444,7 +533,7 @@ pub fn build_path_seg<'t, T: TirBuilder<'t>>(
     let res = resolutions[&seg.id].map_id(|id| tcx.get_id(id).unwrap());
     let seg = match res {
         Res::Def(DefKind::TypeAlias | DefKind::Adt | DefKind::Func | DefKind::Trait, _) => {
-            let args = lower_args(tcx, seg.args);
+            let args = lower_args(tcx, generics, seg.args);
             let (Res::Def(_, id) | Res::Local(id)) = res;
             let generics = tcx.get_generics(id);
 
@@ -487,8 +576,20 @@ pub fn build_item<'a, 't>(
     let item = match item {
         ast::Item::Mod(m) => Item::Mod(*build_mod(ast, m, resolutions, tir)),
         ast::Item::TypeDef(t) => Item::Adt(*build_adt_def(ast, t, resolutions, tir)),
-        ast::Item::TypeAlias(a) => Item::TyAlias(*build_type_alias(ast, a, resolutions, tir)),
-        ast::Item::Fn(f) => Item::Fn(*build_fn(ast, f, resolutions, tir)),
+        ast::Item::TypeAlias(a) => Item::TyAlias(*build_type_alias(
+            ast,
+            a,
+            resolutions,
+            &mut InScopeBinders::new([]),
+            tir,
+        )),
+        ast::Item::Fn(f) => Item::Fn(*build_fn(
+            ast,
+            f,
+            resolutions,
+            &mut InScopeBinders::new([]),
+            tir,
+        )),
         ast::Item::Trait(t) => Item::Trait(*build_trait(ast, t, resolutions, tir)),
         ast::Item::Impl(i) => Item::Impl(*build_impl(ast, i, resolutions, tir)),
 
@@ -544,47 +645,65 @@ pub fn build_generics<'a, 't>(
     tir.empty_tir.arena.alloc(generics)
 }
 
+pub fn build_clause<'a, 't>(
+    tir: &mut ItemTirBuilder<'t>,
+    resolutions: &HashMap<NodeId, Res<NodeId>>,
+    in_scope_binders: &mut InScopeBinders,
+    clause: &ast::Clause<'a>,
+) -> Option<tir::Clause<'t>> {
+    match &clause.kind {
+        ast::ClauseKind::AliasEq(t1, t2) => {
+            let t1_span = t1.span;
+            let t1 = build_ty(t1, tir, resolutions, in_scope_binders).skip_binder();
+            let t2 = build_ty(t2, tir, resolutions, in_scope_binders).skip_binder();
+            match *t1 {
+                Ty::Alias(id, args) => Some(tir::Clause::AliasEq(id, args, t2)),
+                _ => {
+                    tir.err(diag_non_alias_in_alias_eq_bound(t1_span));
+                    None
+                }
+            }
+        }
+        ast::ClauseKind::Trait(path) => match resolutions[&path.segments.last().unwrap().id] {
+            Res::Def(DefKind::Trait, _) => {
+                let (id, args) = build_args_for_path(path, tir, resolutions, in_scope_binders);
+                Some(tir::Clause::Trait(id, args.skip_binder()))
+            }
+            Res::Def(_, _) => {
+                tir.err(diag_non_trait_resolution_of_trait_bound(path.span));
+                None
+            }
+            Res::Local(_) => unreachable!(),
+        },
+        ast::ClauseKind::Bound(binder) => {
+            let bound_clause = in_scope_binders.try_lower_binder(
+                tir,
+                *binder,
+                |in_scope_binders, tir, inner| {
+                    build_clause(tir, resolutions, in_scope_binders, inner)
+                        .map(|clause| &*tir.arena().alloc(clause))
+                },
+            )?;
+            Some(tir::Clause::Bound(bound_clause))
+        }
+    }
+}
+
 pub fn build_bounds<'a, 't>(
     bounds: ast::Bounds<'a>,
     tir: &mut ItemTirBuilder<'t>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
-    item_generics: &'t Generics<'t>,
+    in_scope_binders: &mut InScopeBinders,
+    params_introduced_with_bounds: &[GenParam<'t>],
 ) -> EarlyBinder<tir::Bounds<'t>> {
     let mut clauses = bounds
         .clauses
         .iter()
-        .flat_map(|clause| match &clause.kind {
-            ast::ClauseKind::AliasEq(t1, t2) => {
-                let t1_span = t1.span;
-                let t1 = build_ty(t1, tir, resolutions, item_generics).skip_binder();
-                let t2 = build_ty(t2, tir, resolutions, item_generics).skip_binder();
-                match *t1 {
-                    Ty::Alias(id, args) => Some(tir::Clause::AliasEq(id, args, t2)),
-                    _ => {
-                        tir.err(diag_non_alias_in_alias_eq_bound(t1_span));
-                        None
-                    }
-                }
-            }
-            ast::ClauseKind::Trait(path) => match resolutions[&path.segments.last().unwrap().id] {
-                Res::Def(DefKind::Trait, _) => {
-                    let (id, args) = build_args_for_path(path, tir, resolutions, item_generics);
-                    Some(tir::Clause::Trait(id, args.skip_binder()))
-                }
-                Res::Def(_, _) => {
-                    tir.err(diag_non_trait_resolution_of_trait_bound(path.span));
-                    None
-                }
-                Res::Local(_) => unreachable!(),
-            },
-        })
+        .flat_map(|clause| build_clause(tir, resolutions, in_scope_binders, clause))
         .collect::<Vec<_>>();
-    clauses.extend(item_generics.params.iter().map(|param| {
-        let var_idx = item_generics.param_id_to_var[&param.id];
-        tir::Clause::WellFormed(
-            tir.arena()
-                .alloc(Ty::Bound(DebruijnIndex(0), BoundVar(var_idx))),
-        )
+    clauses.extend(params_introduced_with_bounds.iter().map(|param| {
+        let (debruijn_idx, bound_var) = in_scope_binders.bound_var_for_param(param.id);
+        tir::Clause::WellFormed(tir.arena().alloc(Ty::Bound(debruijn_idx, bound_var)))
     }));
 
     let clauses = tir.arena().alloc_slice_fill_iter(clauses);
@@ -626,141 +745,165 @@ pub fn build_adt_def<'a, 't>(
 ) -> &'t Adt<'t> {
     let id = tir.get_id(adt.id).unwrap();
 
-    let generics = tir.get_generics(id);
+    InScopeBinders::new([]).enter_generics(tir, id, |in_scope_binders, tir, generics| {
+        let bounds = build_bounds(
+            adt.bounds,
+            tir,
+            resolutions,
+            in_scope_binders,
+            generics.params,
+        );
 
-    let bounds = build_bounds(adt.bounds, tir, resolutions, generics);
+        let variants = adt
+            .variants
+            .iter()
+            .map(|variant| {
+                let variant_id = tir.get_id(variant.id).unwrap();
 
-    let variants = adt
-        .variants
-        .iter()
-        .map(|variant| {
-            let variant_id = tir.get_id(variant.id).unwrap();
+                let adts = variant
+                    .type_defs
+                    .iter()
+                    .map(|type_def| build_adt_def(ast, type_def, resolutions, tir))
+                    .collect::<Vec<_>>()
+                    .into_iter();
+                let adts = tir.empty_tir.arena.alloc_slice_fill_iter(adts);
 
-            let adts = variant
-                .type_defs
-                .iter()
-                .map(|type_def| build_adt_def(ast, type_def, resolutions, tir))
-                .collect::<Vec<_>>()
-                .into_iter();
-            let adts = tir.empty_tir.arena.alloc_slice_fill_iter(adts);
+                let fields = variant
+                    .field_defs
+                    .iter()
+                    .map(|field_def| {
+                        let field_id = tir.get_id(field_def.id).unwrap();
+                        let field = tir::Field {
+                            id: field_id,
+                            name: tir.empty_tir.arena.alloc(field_def.name.to_string()),
+                            ty: build_ty(field_def.ty, tir, resolutions, in_scope_binders),
+                        };
+                        &*tir.empty_tir.arena.alloc(Item::Field(field))
+                    })
+                    .collect::<Vec<_>>();
+                for f in fields.iter() {
+                    tir.register_item(f.unwrap_field().id, f);
+                }
+                let fields = tir
+                    .empty_tir
+                    .arena
+                    .alloc_slice_fill_iter(fields.into_iter().map(|item| item.unwrap_field()));
 
-            let fields = variant
-                .field_defs
-                .iter()
-                .map(|field_def| {
-                    let field_id = tir.get_id(field_def.id).unwrap();
-                    let field = tir::Field {
-                        id: field_id,
-                        name: tir.empty_tir.arena.alloc(field_def.name.to_string()),
-                        ty: build_ty(field_def.ty, tir, resolutions, &generics),
-                    };
-                    &*tir.empty_tir.arena.alloc(Item::Field(field))
-                })
-                .collect::<Vec<_>>();
-            for f in fields.iter() {
-                tir.register_item(f.unwrap_field().id, f);
-            }
-            let fields = tir
-                .empty_tir
-                .arena
-                .alloc_slice_fill_iter(fields.into_iter().map(|item| item.unwrap_field()));
+                let variant = tir::Variant {
+                    id: variant_id,
+                    name: variant
+                        .name
+                        .map(|name| tir.empty_tir.arena.alloc(name.to_string()).as_str()),
+                    adts,
+                    fields,
+                };
+                &*tir.empty_tir.arena.alloc(Item::Variant(variant))
+            })
+            .collect::<Vec<_>>();
+        for v in variants.iter() {
+            tir.register_item(v.unwrap_variant().id, v);
+        }
+        let variants = &*tir
+            .empty_tir
+            .arena
+            .alloc_slice_fill_iter(variants.into_iter().map(|item| item.unwrap_variant()));
 
-            let variant = tir::Variant {
-                id: variant_id,
-                name: variant
-                    .name
-                    .map(|name| tir.empty_tir.arena.alloc(name.to_string()).as_str()),
-                adts,
-                fields,
-            };
-            &*tir.empty_tir.arena.alloc(Item::Variant(variant))
-        })
-        .collect::<Vec<_>>();
-    for v in variants.iter() {
-        tir.register_item(v.unwrap_variant().id, v);
-    }
-    let variants = &*tir
-        .empty_tir
-        .arena
-        .alloc_slice_fill_iter(variants.into_iter().map(|item| item.unwrap_variant()));
-
-    let tir_adt = tir::Adt {
-        id,
-        name: tir.empty_tir.arena.alloc(adt.name.to_string()),
-        generics,
-        bounds,
-        variants,
-    };
-    let tir_adt = tir.empty_tir.arena.alloc(tir_adt);
-    tir.register_item(id, tir.empty_tir.arena.alloc(tir::Item::Adt(*tir_adt)));
-    tir_adt
+        let tir_adt = tir::Adt {
+            id,
+            name: tir.empty_tir.arena.alloc(adt.name.to_string()),
+            generics,
+            bounds,
+            variants,
+        };
+        let tir_adt = tir.empty_tir.arena.alloc(tir_adt);
+        tir.register_item(id, tir.empty_tir.arena.alloc(tir::Item::Adt(*tir_adt)));
+        tir_adt
+    })
 }
 
 fn build_type_alias<'a, 't>(
     _ast: &'a Nodes<'a>,
     alias: &ast::TypeAlias<'a>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
+    in_scope_binders: &mut InScopeBinders,
     tir: &mut ItemTirBuilder<'t>,
 ) -> &'t TyAlias<'t> {
     let id = tir.get_id(alias.id).unwrap();
 
-    let generics = tir.get_generics(id);
-    let bounds = build_bounds(alias.bounds, tir, resolutions, generics);
+    in_scope_binders.enter_generics(tir, id, |in_scope_binders, tir, generics| {
+        let bounds = build_bounds(
+            alias.bounds,
+            tir,
+            resolutions,
+            in_scope_binders,
+            generics.params,
+        );
 
-    let tir_alias = tir::TyAlias {
-        id,
-        name: tir.empty_tir.arena.alloc(alias.name.to_string()),
-        generics,
-        bounds,
-        ty: alias.ty.map(|ty| build_ty(ty, tir, resolutions, generics)),
-    };
-    let tir_alias = tir.empty_tir.arena.alloc(tir_alias);
-    tir.register_item(
-        id,
-        tir.empty_tir.arena.alloc(tir::Item::TyAlias(*tir_alias)),
-    );
-    tir_alias
+        let tir_alias = tir::TyAlias {
+            id,
+            name: tir.empty_tir.arena.alloc(alias.name.to_string()),
+            generics,
+            bounds,
+            ty: alias
+                .ty
+                .map(|ty| build_ty(ty, tir, resolutions, in_scope_binders)),
+        };
+        let tir_alias = tir.empty_tir.arena.alloc(tir_alias);
+        tir.register_item(
+            id,
+            tir.empty_tir.arena.alloc(tir::Item::TyAlias(*tir_alias)),
+        );
+        tir_alias
+    })
 }
 
 fn build_fn<'a, 't>(
     _ast: &'a Nodes<'a>,
     func: &ast::Fn<'a>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
+    in_scope_binders: &mut InScopeBinders,
     tir: &mut ItemTirBuilder<'t>,
 ) -> &'t Fn<'t> {
     let id = tir.get_id(func.id).unwrap();
-    let generics = tir.get_generics(id);
-    let bounds = build_bounds(func.bounds, tir, resolutions, generics);
+    in_scope_binders.enter_generics(tir, id, |in_scope_binders, tir, generics| {
+        let bounds = build_bounds(
+            func.bounds,
+            tir,
+            resolutions,
+            in_scope_binders,
+            generics.params,
+        );
 
-    let params = func
-        .params
-        .iter()
-        .map(|param| tir::Param {
-            ty: build_ty(param.ty.unwrap(), tir, resolutions, &generics),
-            span: param.span,
-        })
-        .collect::<Vec<_>>()
-        .into_iter();
-    let params = tir.empty_tir.arena.alloc_slice_fill_iter(params);
+        let params = func
+            .params
+            .iter()
+            .map(|param| tir::Param {
+                ty: build_ty(param.ty.unwrap(), tir, resolutions, in_scope_binders),
+                span: param.span,
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        let params = tir.empty_tir.arena.alloc_slice_fill_iter(params);
 
-    let tir_fn = tir::Fn {
-        id,
-        name: tir.empty_tir.arena.alloc(func.name.to_string()),
-        generics,
-        bounds,
-        params,
-        ret_ty: func
-            .ret_ty
-            .map(|ty| build_ty(ty, tir, resolutions, &generics))
-            .unwrap_or_else(|| EarlyBinder(&*tir.empty_tir.arena.alloc(Ty::Unit))),
-        body: func.body.map(|expr| {
-            tir.get_body_id(expr.id)
-                .expect("bodyids and tirids should have been pre generated before building tir")
-        }),
-    };
-    let tir_fn = tir.empty_tir.arena.alloc(tir_fn);
-    tir.register_item(id, tir.empty_tir.arena.alloc(tir::Item::Fn(*tir_fn)));
-    tir_fn
+        let tir_fn = tir::Fn {
+            id,
+            name: tir.empty_tir.arena.alloc(func.name.to_string()),
+            generics,
+            bounds,
+            params,
+            ret_ty: func
+                .ret_ty
+                .map(|ty| build_ty(ty, tir, resolutions, in_scope_binders))
+                .unwrap_or_else(|| EarlyBinder(&*tir.empty_tir.arena.alloc(Ty::Unit))),
+            body: func.body.map(|expr| {
+                tir.get_body_id(expr.id)
+                    .expect("bodyids and tirids should have been pre generated before building tir")
+            }),
+        };
+        let tir_fn = tir.empty_tir.arena.alloc(tir_fn);
+        tir.register_item(id, tir.empty_tir.arena.alloc(tir::Item::Fn(*tir_fn)));
+        tir_fn
+    })
 }
 
 fn build_trait<'a, 't>(
@@ -770,32 +913,45 @@ fn build_trait<'a, 't>(
     tir: &mut ItemTirBuilder<'t>,
 ) -> &'t Trait<'t> {
     let id = tir.get_id(trait_.id).unwrap();
-    let generics = tir.get_generics(id);
-    let bounds = build_bounds(trait_.bounds, tir, resolutions, generics);
+    InScopeBinders::new([]).enter_generics(tir, id, |in_scope_binders, tir, generics| {
+        let bounds = build_bounds(
+            trait_.bounds,
+            tir,
+            resolutions,
+            in_scope_binders,
+            generics.params,
+        );
 
-    let assoc_items = trait_
-        .assoc_items
-        .iter()
-        .map(|assoc_item| match assoc_item {
-            ast::AssocItem::Fn(f) => AssocItem::Fn(*build_fn(ast, f, resolutions, tir)),
-            ast::AssocItem::Type(t) => {
-                AssocItem::TyAlias(*build_type_alias(ast, t, resolutions, tir))
-            }
-        })
-        .collect::<Vec<_>>()
-        .into_iter();
-    let assoc_items = tir.empty_tir.arena.alloc_slice_fill_iter(assoc_items);
+        let assoc_items = trait_
+            .assoc_items
+            .iter()
+            .map(|assoc_item| match assoc_item {
+                ast::AssocItem::Fn(f) => {
+                    AssocItem::Fn(*build_fn(ast, f, resolutions, in_scope_binders, tir))
+                }
+                ast::AssocItem::Type(t) => AssocItem::TyAlias(*build_type_alias(
+                    ast,
+                    t,
+                    resolutions,
+                    in_scope_binders,
+                    tir,
+                )),
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        let assoc_items = tir.empty_tir.arena.alloc_slice_fill_iter(assoc_items);
 
-    let tir_trait = tir::Trait {
-        id,
-        name: tir.empty_tir.arena.alloc(trait_.ident.to_string()),
-        generics,
-        bounds,
-        assoc_items,
-    };
-    let tir_trait = tir.empty_tir.arena.alloc(tir_trait);
-    tir.register_item(id, tir.empty_tir.arena.alloc(tir::Item::Trait(*tir_trait)));
-    tir_trait
+        let tir_trait = tir::Trait {
+            id,
+            name: tir.empty_tir.arena.alloc(trait_.ident.to_string()),
+            generics,
+            bounds,
+            assoc_items,
+        };
+        let tir_trait = tir.empty_tir.arena.alloc(tir_trait);
+        tir.register_item(id, tir.empty_tir.arena.alloc(tir::Item::Trait(*tir_trait)));
+        tir_trait
+    })
 }
 
 fn build_impl<'a, 't>(
@@ -805,57 +961,70 @@ fn build_impl<'a, 't>(
     tir: &mut ItemTirBuilder<'t>,
 ) -> &'t Impl<'t> {
     let id = tir.get_id(impl_.id).unwrap();
-    let generics = tir.get_generics(id);
-    let bounds = build_bounds(impl_.bounds, tir, resolutions, generics);
+    InScopeBinders::new([]).enter_generics(tir, id, |in_scope_binders, tir, generics| {
+        let bounds = build_bounds(
+            impl_.bounds,
+            tir,
+            resolutions,
+            in_scope_binders,
+            generics.params,
+        );
 
-    let assoc_items = impl_
-        .assoc_items
-        .iter()
-        .map(|assoc_item| match assoc_item {
-            ast::AssocItem::Fn(f) => AssocItem::Fn(*build_fn(ast, f, resolutions, tir)),
-            ast::AssocItem::Type(t) => {
-                AssocItem::TyAlias(*build_type_alias(ast, t, resolutions, tir))
-            }
-        })
-        .collect::<Vec<_>>()
-        .into_iter();
-    let assoc_items = tir.empty_tir.arena.alloc_slice_fill_iter(assoc_items);
-
-    let of_trait = {
-        for ast::PathSeg { args, span, .. } in
-            impl_.of_trait.segments[..(impl_.of_trait.segments.len() - 1)].iter()
-        {
-            if args.0.len() > 0 {
-                tir.empty_tir
-                    .err(diag_gen_args_provided_when_shouldnt(*span));
-            }
-        }
-        let ast::PathSeg { args, .. } = impl_.of_trait.segments.last().unwrap();
-        let args = EarlyBinder(GenArgs(tir.empty_tir.arena.alloc_slice_fill_iter(
-            args.0.iter().map(|arg| match arg {
-                ast::GenArg::Ty(ty) => {
-                    GenArg::Ty(build_ty(ty, tir, resolutions, generics).skip_binder())
+        let assoc_items = impl_
+            .assoc_items
+            .iter()
+            .map(|assoc_item| match assoc_item {
+                ast::AssocItem::Fn(f) => {
+                    AssocItem::Fn(*build_fn(ast, f, resolutions, in_scope_binders, tir))
                 }
-            }),
-        )));
-        let res = resolutions.get(&impl_.id).unwrap();
-        match res {
-            Res::Def(DefKind::Trait, id) => {
-                let tir_id = tir.get_id(*id).unwrap();
-                (tir_id, args)
-            }
-            _ => unreachable!(),
-        }
-    };
+                ast::AssocItem::Type(t) => AssocItem::TyAlias(*build_type_alias(
+                    ast,
+                    t,
+                    resolutions,
+                    in_scope_binders,
+                    tir,
+                )),
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        let assoc_items = tir.empty_tir.arena.alloc_slice_fill_iter(assoc_items);
 
-    let tir_impl = tir::Impl {
-        id,
-        of_trait,
-        generics,
-        bounds,
-        assoc_items,
-    };
-    let tir_impl = tir.empty_tir.arena.alloc(tir_impl);
-    tir.register_item(id, tir.empty_tir.arena.alloc(tir::Item::Impl(*tir_impl)));
-    tir_impl
+        let of_trait = {
+            for ast::PathSeg { args, span, .. } in
+                impl_.of_trait.segments[..(impl_.of_trait.segments.len() - 1)].iter()
+            {
+                if args.0.len() > 0 {
+                    tir.empty_tir
+                        .err(diag_gen_args_provided_when_shouldnt(*span));
+                }
+            }
+            let ast::PathSeg { args, .. } = impl_.of_trait.segments.last().unwrap();
+            let args = EarlyBinder(GenArgs(tir.empty_tir.arena.alloc_slice_fill_iter(
+                args.0.iter().map(|arg| match arg {
+                    ast::GenArg::Ty(ty) => {
+                        GenArg::Ty(build_ty(ty, tir, resolutions, in_scope_binders).skip_binder())
+                    }
+                }),
+            )));
+            let res = resolutions.get(&impl_.id).unwrap();
+            match res {
+                Res::Def(DefKind::Trait, id) => {
+                    let tir_id = tir.get_id(*id).unwrap();
+                    (tir_id, args)
+                }
+                _ => unreachable!(),
+            }
+        };
+
+        let tir_impl = tir::Impl {
+            id,
+            of_trait,
+            generics,
+            bounds,
+            assoc_items,
+        };
+        let tir_impl = tir.empty_tir.arena.alloc(tir_impl);
+        tir.register_item(id, tir.empty_tir.arena.alloc(tir::Item::Impl(*tir_impl)));
+        tir_impl
+    })
 }

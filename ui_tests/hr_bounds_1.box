@@ -1,0 +1,17 @@
+trait Trait[T, U, V] {}
+
+trait Other[T] {
+    fn bar[U](a: T, b: U)
+    where {
+        for[V] Trait[T, U, V]
+    };
+}
+
+impl[T] Other[T] {
+    fn bar[U](a: T, b: U)
+    where {
+        for[V] Trait[T, U, V],
+    } {
+
+    }
+}
