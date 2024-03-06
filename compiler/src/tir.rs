@@ -82,7 +82,18 @@ impl<T> EarlyBinder<T> {
         struct Folder<'t> {
             args: GenArgs<'t>,
             tcx: &'t TirCtx<'t>,
+            outtermost_debruijn: DebruijnIndex,
         }
+        impl<'t> Folder<'t> {
+            fn new(tcx: &'t TirCtx<'t>, args: GenArgs<'t>) -> Self {
+                Self {
+                    args,
+                    tcx,
+                    outtermost_debruijn: DebruijnIndex(0),
+                }
+            }
+        }
+
         impl<'t> TypeFolder<'t> for Folder<'t> {
             fn tcx(&self) -> &'t TirCtx<'t> {
                 self.tcx
@@ -99,25 +110,48 @@ impl<T> EarlyBinder<T> {
                     | Ty::Int
                     | Ty::Float
                     | Ty::Error => ty.super_fold_with(self),
-                    // FIXME: ideally this would check that the depth is correct
-                    Ty::Bound(_, var) => match self.args.0[var.0 as usize] {
-                        GenArg::Ty(ty) => ty,
-                    },
+                    Ty::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => {
+                        match self.args.0[var.0 as usize] {
+                            GenArg::Ty(ty) => ty,
+                        }
+                    }
+                    Ty::Bound(_, _) => ty.super_fold_with(self),
+                }
+            }
+
+            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+                self.outtermost_debruijn.0 += 1;
+                let r = binder.value.fold_with(self);
+                self.outtermost_debruijn.0 -= 1;
+                Binder {
+                    value: r,
+                    vars: binder.vars,
                 }
             }
         }
 
-        self.0.fold_with(&mut Folder { args, tcx })
+        self.0.fold_with(&mut Folder::new(tcx, args))
     }
 
     pub fn instantiate_root_placeholders<'t>(self, tcx: &'t TirCtx<'t>) -> T
     where
         T: TypeFoldable<'t>,
     {
-        struct Folder<'t>(&'t TirCtx<'t>);
+        struct Folder<'t> {
+            tcx: &'t TirCtx<'t>,
+            outtermost_debruijn: DebruijnIndex,
+        }
+        impl<'t> Folder<'t> {
+            fn new(tcx: &'t TirCtx<'t>) -> Self {
+                Self {
+                    tcx,
+                    outtermost_debruijn: DebruijnIndex(0),
+                }
+            }
+        }
         impl<'t> TypeFolder<'t> for Folder<'t> {
             fn tcx(&self) -> &'t TirCtx<'t> {
-                self.0
+                self.tcx
             }
 
             fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
@@ -131,13 +165,25 @@ impl<T> EarlyBinder<T> {
                     | Ty::Float
                     | Ty::Alias(_, _)
                     | Ty::Error => ty.super_fold_with(self),
-                    // FIXME: ideally this would check that the depth is correct
-                    Ty::Bound(_, var) => self.0.arena.alloc(Ty::Placeholder(Universe(0), *var)),
+                    Ty::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => {
+                        self.tcx.arena.alloc(Ty::Placeholder(Universe(0), *var))
+                    }
+                    Ty::Bound(_, _) => ty.super_fold_with(self),
+                }
+            }
+
+            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+                self.outtermost_debruijn.0 += 1;
+                let r = binder.value.fold_with(self);
+                self.outtermost_debruijn.0 -= 1;
+                Binder {
+                    value: r,
+                    vars: binder.vars,
                 }
             }
         }
 
-        self.0.fold_with(&mut Folder(tcx))
+        self.0.fold_with(&mut Folder::new(tcx))
     }
 
     /// be careful

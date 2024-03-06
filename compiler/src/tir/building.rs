@@ -182,16 +182,18 @@ impl<'t> TirBuilder<'t> for TypeckCtxt<'_, '_, 't> {
 }
 
 pub struct InScopeBinders {
+    early_params: Vec<HashMap<TirId, u32>>,
     binders: Vec<HashMap<TirId, u32>>,
 }
 
 impl InScopeBinders {
     pub fn new<'a, 't: 'a>(item_generics: impl IntoIterator<Item = &'a Generics<'t>>) -> Self {
         Self {
-            binders: item_generics
+            early_params: item_generics
                 .into_iter()
                 .map(|generics| generics.param_id_to_var.clone())
                 .collect(),
+            binders: vec![],
         }
     }
 
@@ -201,10 +203,12 @@ impl InScopeBinders {
         item: TirId,
         f: impl FnOnce(&mut InScopeBinders, &mut B, &'t Generics<'t>) -> T,
     ) -> T {
+        assert_eq!(self.binders.len(), 0);
+
         let generics = tcx.get_generics(item);
-        self.binders.push(generics.param_id_to_var.clone());
+        self.early_params.push(generics.param_id_to_var.clone());
         let r = f(self, tcx, generics);
-        self.binders.pop();
+        self.early_params.pop();
         r
     }
 
@@ -252,6 +256,7 @@ impl InScopeBinders {
             .iter()
             .rev()
             .enumerate()
+            .chain(self.early_params.iter().map(|hm| (self.binders.len(), hm)))
             .find_map(|(depth, var_map)| {
                 Some((
                     DebruijnIndex(depth as u32),

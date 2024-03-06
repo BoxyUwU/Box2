@@ -96,15 +96,21 @@ pub fn super_visit_impl<'t, V: Visitor<'t>>(v: &mut V, impl_: &Impl<'t>) {
 
 pub trait TypeVisitor<'t> {
     fn visit_ty(&mut self, ty: &'t Ty<'t>);
+    fn visit_binder<T: TypeVisitable<'t>>(&mut self, binder: Binder<'t, T>);
 }
 pub trait TypeFolder<'t>: FallibleTypeFolder<'t, Error = core::convert::Infallible> {
     fn tcx(&self) -> &'t TirCtx<'t>;
     fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t>;
+    fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T>;
 }
 pub trait FallibleTypeFolder<'t> {
     type Error;
     fn tcx(&self) -> &'t TirCtx<'t>;
     fn try_fold_ty(&mut self, ty: &'t Ty<'t>) -> Result<&'t Ty<'t>, Self::Error>;
+    fn try_fold_binder<T: TypeFoldable<'t>>(
+        &mut self,
+        binder: Binder<'t, T>,
+    ) -> Result<Binder<'t, T>, Self::Error>;
 }
 
 impl<'t, F: TypeFolder<'t>> FallibleTypeFolder<'t> for F {
@@ -116,6 +122,13 @@ impl<'t, F: TypeFolder<'t>> FallibleTypeFolder<'t> for F {
 
     fn try_fold_ty(&mut self, ty: &'t Ty<'t>) -> Result<&'t Ty<'t>, Self::Error> {
         Ok(TypeFolder::fold_ty(self, ty))
+    }
+
+    fn try_fold_binder<T: TypeFoldable<'t>>(
+        &mut self,
+        binder: Binder<'t, T>,
+    ) -> Result<Binder<'t, T>, Self::Error> {
+        Ok(TypeFolder::fold_binder(self, binder))
     }
 }
 
@@ -279,7 +292,7 @@ impl<'t, T: TypeVisitable<'t>> TypeVisitableExt<'t> for T {
     fn references_err(&self) -> bool {
         struct ErrVisitor(bool);
 
-        impl TypeVisitor<'_> for ErrVisitor {
+        impl<'t> TypeVisitor<'t> for ErrVisitor {
             fn visit_ty(&mut self, ty: &'_ Ty<'_>) {
                 match ty {
                     Ty::Unit
@@ -296,6 +309,10 @@ impl<'t, T: TypeVisitable<'t>> TypeVisitableExt<'t> for T {
                         return;
                     }
                 }
+            }
+
+            fn visit_binder<T: TypeVisitable<'t>>(&mut self, binder: Binder<'t, T>) {
+                binder.value.visit_with(self);
             }
         }
 

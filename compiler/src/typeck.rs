@@ -277,6 +277,10 @@ impl<'t> InferCtxt<'t> {
                     .alloc(self.infcx.shallow_resolve_ty(*ty));
                 ty.super_fold_with(self)
             }
+
+            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+                unreachable!("binders in types are not supported");
+            }
         }
         *DeeplyResolve { infcx: self }.fold_ty(&*self.tcx().arena.alloc(ty))
     }
@@ -379,6 +383,13 @@ impl<'t> FallibleTypeFolder<'t> for Generalizer<'_, 't> {
             | Ty::Float
             | Ty::Error => (self.infcx.tcx().arena.alloc(ty)).try_super_fold_with(self),
         }
+    }
+
+    fn try_fold_binder<T: TypeFoldable<'t>>(
+        &mut self,
+        binder: Binder<'t, T>,
+    ) -> Result<Binder<'t, T>, Self::Error> {
+        unreachable!("binders in types are not supported");
     }
 }
 
