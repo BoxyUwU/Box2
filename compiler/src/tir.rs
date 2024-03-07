@@ -88,6 +88,14 @@ impl Universe {
         gen: UniverseGen(0),
     };
 
+    /// Prefer to use `UniverseStorage`/`Infcx`
+    pub fn new_raw(idx: u32, gen: u32) -> Self {
+        Self {
+            idx,
+            gen: UniverseGen(gen),
+        }
+    }
+
     pub fn can_name(self, b: Universe, infcx: &InferCtxt<'_>) -> bool {
         assert!(infcx.is_universe_alive(self));
         assert!(infcx.is_universe_alive(b));
@@ -271,6 +279,15 @@ pub struct Binder<'t, T> {
     vars: &'t [BoundVarKind],
 }
 impl<'t, T> Binder<'t, T> {
+    pub fn bind_with_vars(value: T, vars: &'t [BoundVarKind]) -> Self {
+        // FIXME: validate vars
+        Self { value, vars }
+    }
+
+    pub fn vars(&self) -> &'t [BoundVarKind] {
+        self.vars
+    }
+
     /// Dangerous
     pub fn skip_binder(self) -> T {
         self.value

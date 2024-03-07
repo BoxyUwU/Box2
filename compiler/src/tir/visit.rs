@@ -1,4 +1,4 @@
-use crate::solve::GoalKind;
+use crate::solve::{GoalKind, Response, VarValues};
 
 use super::*;
 
@@ -287,7 +287,7 @@ impl<'t> TypeVisitable<'t> for GoalKind<'t> {
     fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
         match self {
             GoalKind::WellFormed(ty) => ty.visit_with(v),
-            GoalKind::StructurallyNorm(id, args, ty) => {
+            GoalKind::StructurallyNorm(_id, args, ty) => {
                 args.visit_with(v);
                 ty.visit_with(v);
             }
@@ -315,6 +315,41 @@ impl<'t> TypeFoldable<'t> for GoalKind<'t> {
             )),
             GoalKind::Trait(id, args) => Ok(GoalKind::Trait(id, args.try_fold_with(v)?)),
         }
+    }
+}
+
+impl<'t> TypeVisitable<'t> for VarValues<'t> {
+    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+        for ty in self.0 {
+            ty.visit_with(v)
+        }
+    }
+}
+
+impl<'t> TypeFoldable<'t> for VarValues<'t> {
+    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+        let tys = self
+            .0
+            .iter()
+            .map(|ty| ty.try_fold_with(v))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(VarValues(
+            v.tcx().arena.alloc_slice_fill_iter(tys.into_iter()),
+        ))
+    }
+}
+
+impl<'t> TypeVisitable<'t> for Response<'t> {
+    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+        self.var_values.visit_with(v)
+    }
+}
+
+impl<'t> TypeFoldable<'t> for Response<'t> {
+    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+        Ok(Response {
+            var_values: self.var_values.try_fold_with(v)?,
+        })
     }
 }
 

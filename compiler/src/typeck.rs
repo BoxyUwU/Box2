@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     iter::FromIterator,
-    marker::PhantomData,
     ops::{Deref, DerefMut},
 };
 
@@ -321,7 +320,7 @@ impl<'t> Deref for InferCtxt<'t> {
 }
 
 impl<'t> InferCtxt<'t> {
-    fn new(tcx: &'t TirCtx<'t>) -> Self {
+    pub fn new(tcx: &'t TirCtx<'t>) -> Self {
         Self {
             tcx,
             ty_var_storage: TyVarStorage::new(),
@@ -351,6 +350,11 @@ impl<'t> InferCtxt<'t> {
 
     pub fn new_var(&mut self, span: Span) -> InferId {
         self.ty_var_storage.new_key(self.current_universe(), span)
+    }
+
+    pub fn new_var_in_universe(&mut self, universe: Universe, span: Span) -> InferId {
+        assert!(self.is_universe_alive(universe));
+        self.ty_var_storage.new_key(universe, span)
     }
 
     pub fn instantiate_var(&mut self, var: InferId, to: &'t Ty<'t>) {

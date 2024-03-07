@@ -1,4 +1,8 @@
+pub mod canonical;
+
 use crate::tir::{Binder, Bounds, GenArgs, TirId, Ty};
+
+pub use canonical::*;
 
 pub struct Goal<'t> {
     pub bounds: Bounds<'t>,
@@ -12,4 +16,5 @@ pub enum GoalKind<'t> {
     Trait(TirId, GenArgs<'t>),
 }
 
+#[derive(Debug)]
 pub struct NoSolution;
