@@ -1,40 +1,40 @@
-error: mismatched types: a:Bar[?17] b:?17
+error: mismatched types: a:Bar[?2] b:?2
    ┌─ main.box:14:18
    │
 14 │     eq_tys[?](a, b);
    │                  ^
 
 error: could not infer type
-   ┌─ main.box:14:12
+   ┌─ main.box:10:9
    │
-14 │     eq_tys[?](a, b);
-   │            ^
+10 │     let a = mk_x[?]();
+   │         ^
 
 error: could not infer type
-   ┌─ main.box:14:12
+   ┌─ main.box:10:9
    │
-14 │     eq_tys[?](a, b);
-   │            ^
+10 │     let a = mk_x[?]();
+   │         ^
 
 error: could not infer type
-   ┌─ main.box:14:12
+   ┌─ main.box:10:9
    │
-14 │     eq_tys[?](a, b);
-   │            ^
+10 │     let a = mk_x[?]();
+   │         ^
 
 error: could not infer type
-   ┌─ main.box:14:12
+   ┌─ main.box:10:9
    │
-14 │     eq_tys[?](a, b);
-   │            ^
+10 │     let a = mk_x[?]();
+   │         ^
 
 error: could not infer type
-   ┌─ main.box:14:12
+   ┌─ main.box:10:9
    │
-14 │     eq_tys[?](a, b);
-   │            ^
+10 │     let a = mk_x[?]();
+   │         ^
 
-error: mismatched types: a:!0_0 b:()
+error: mismatched types: a:!U0_0 b:()
    ┌─ main.box:19:19
    │
 19 │ fn mk_x[X]() -> X {}

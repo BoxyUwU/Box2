@@ -1,3 +1,5 @@
+use crate::solve::GoalKind;
+
 use super::*;
 
 pub trait Visitor<'t>: Sized {
@@ -278,6 +280,41 @@ impl<'t> TypeFoldable<'t> for Bounds<'t> {
                     .collect::<Result<Vec<_>, V::Error>>()?,
             ),
         })
+    }
+}
+
+impl<'t> TypeVisitable<'t> for GoalKind<'t> {
+    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+        match self {
+            GoalKind::WellFormed(ty) => ty.visit_with(v),
+            GoalKind::StructurallyNorm(id, args, ty) => {
+                args.visit_with(v);
+                ty.visit_with(v);
+            }
+            GoalKind::Equate(ty1, ty2) => {
+                ty1.visit_with(v);
+                ty2.visit_with(v);
+            }
+            GoalKind::Trait(_, args) => args.visit_with(v),
+        }
+    }
+}
+
+impl<'t> TypeFoldable<'t> for GoalKind<'t> {
+    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+        match self {
+            GoalKind::WellFormed(ty) => Ok(GoalKind::WellFormed(ty.try_fold_with(v)?)),
+            GoalKind::StructurallyNorm(id, args, ty) => Ok(GoalKind::StructurallyNorm(
+                id,
+                args.try_fold_with(v)?,
+                ty.try_fold_with(v)?,
+            )),
+            GoalKind::Equate(ty1, ty2) => Ok(GoalKind::Equate(
+                ty1.try_fold_with(v)?,
+                ty2.try_fold_with(v)?,
+            )),
+            GoalKind::Trait(id, args) => Ok(GoalKind::Trait(id, args.try_fold_with(v)?)),
+        }
     }
 }
 

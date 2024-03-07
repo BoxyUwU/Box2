@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{cell::RefCell, collections::HashMap};
 
 use bumpalo::Bump;
@@ -6,8 +7,9 @@ use codespan_reporting::diagnostic::Diagnostic;
 use crate::{
     ast,
     resolve::Res,
-    tir::visit::{TypeFolder, TypeSuperFoldable},
+    tir::visit::{TypeFolder, TypeSuperFoldable, TypeSuperVisitable, TypeVisitable, TypeVisitor},
     tokenize::{Literal, Span},
+    typeck::InferCtxt,
 };
 
 use self::visit::TypeFoldable;
@@ -64,12 +66,101 @@ pub enum GenArg<'t> {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BoundVar(pub u32);
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Universe {
+    idx: u32,
+    gen: UniverseGen,
+}
+impl fmt::Debug for Universe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "U({}_{})", self.idx, self.gen.0)
+    }
+}
+impl fmt::Display for Universe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "U{}", self.idx)
+    }
+}
+impl Universe {
+    pub const ROOT: Universe = Universe {
+        idx: 0,
+        gen: UniverseGen(0),
+    };
+
+    pub fn can_name(self, b: Universe, infcx: &InferCtxt<'_>) -> bool {
+        assert!(infcx.is_universe_alive(self));
+        assert!(infcx.is_universe_alive(b));
+
+        self.idx >= b.idx
+    }
+
+    pub fn idx(self) -> u32 {
+        self.idx
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Universe(pub u32);
+pub struct UniverseGen(u32);
+
+pub struct UniverseStorage {
+    alive_universes: Vec<UniverseGen>,
+    /// Indexed by the `Universe` types `idx` field to find what the previous generation at that index was
+    dead_universes: Vec<UniverseGen>,
+}
+impl UniverseStorage {
+    pub fn new() -> Self {
+        Self {
+            alive_universes: vec![UniverseGen(0)],
+            dead_universes: vec![UniverseGen(0)],
+        }
+    }
+
+    pub fn current_universe(&self) -> Universe {
+        let idx = self.alive_universes.len() - 1;
+        let gen = self.alive_universes[idx];
+        Universe {
+            idx: idx as u32,
+            gen,
+        }
+    }
+
+    pub fn enter_new_universe(&mut self) -> Universe {
+        let new_idx = self.alive_universes.len();
+        let gen = match self.dead_universes.get_mut(new_idx) {
+            Some(gen) => {
+                gen.0 += 1;
+                *gen
+            }
+            None => {
+                self.dead_universes.push(UniverseGen(0));
+                UniverseGen(0)
+            }
+        };
+        self.alive_universes.push(gen);
+        Universe {
+            idx: new_idx as u32,
+            gen,
+        }
+    }
+
+    pub fn exit_current_universe(&mut self) {
+        assert!(self.alive_universes.len() >= 2);
+        self.alive_universes.pop();
+    }
+
+    pub fn is_universe_alive(&self, universe: Universe) -> bool {
+        match self.alive_universes.get(universe.idx as usize) {
+            Some(gen) if gen.0 == universe.gen.0 => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct DebruijnIndex(pub u32);
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Ord, PartialOrd)]
-pub struct InferId(pub usize);
+pub struct InferId(pub u32);
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct EarlyBinder<T>(T);
@@ -101,21 +192,12 @@ impl<T> EarlyBinder<T> {
 
             fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
                 match ty {
-                    Ty::Unit
-                    | Ty::Alias(_, _)
-                    | Ty::Infer(_)
-                    | Ty::FnDef(_, _)
-                    | Ty::Adt(_, _)
-                    | Ty::Placeholder(_, _)
-                    | Ty::Int
-                    | Ty::Float
-                    | Ty::Error => ty.super_fold_with(self),
                     Ty::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => {
                         match self.args.0[var.0 as usize] {
                             GenArg::Ty(ty) => ty,
                         }
                     }
-                    Ty::Bound(_, _) => ty.super_fold_with(self),
+                    _ => ty.super_fold_with(self),
                 }
             }
 
@@ -156,19 +238,10 @@ impl<T> EarlyBinder<T> {
 
             fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
                 match ty {
-                    Ty::Unit
-                    | Ty::Infer(_)
-                    | Ty::FnDef(_, _)
-                    | Ty::Adt(_, _)
-                    | Ty::Placeholder(_, _)
-                    | Ty::Int
-                    | Ty::Float
-                    | Ty::Alias(_, _)
-                    | Ty::Error => ty.super_fold_with(self),
                     Ty::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => {
-                        self.tcx.arena.alloc(Ty::Placeholder(Universe(0), *var))
+                        self.tcx.arena.alloc(Ty::Placeholder(Universe::ROOT, *var))
                     }
-                    Ty::Bound(_, _) => ty.super_fold_with(self),
+                    _ => ty.super_fold_with(self),
                 }
             }
 
@@ -196,6 +269,152 @@ impl<T> EarlyBinder<T> {
 pub struct Binder<'t, T> {
     value: T,
     vars: &'t [BoundVarKind],
+}
+impl<'t, T> Binder<'t, T> {
+    /// Dangerous
+    pub fn skip_binder(self) -> T {
+        self.value
+    }
+
+    pub fn no_bound_vars(self) -> Option<T> {
+        match self.vars.len() {
+            0 => Some(self.value),
+            _ => None,
+        }
+    }
+
+    pub fn dummy(tcx: &'t TirCtx<'t>, value: T) -> Binder<'t, T>
+    where
+        T: TypeVisitable<'t>,
+    {
+        struct Folder {
+            outtermost_debruijn: DebruijnIndex,
+        }
+        impl Folder {
+            fn new() -> Self {
+                Self {
+                    outtermost_debruijn: DebruijnIndex(0),
+                }
+            }
+        }
+        impl<'t> TypeVisitor<'t> for Folder {
+            fn visit_ty(&mut self, ty: &'t Ty<'t>) {
+                match ty {
+                    Ty::Bound(debruijn, _) if debruijn.0 >= self.outtermost_debruijn.0 => {
+                        panic!("ty: {:?} with escaping bound vars", ty)
+                    }
+                    _ => ty.super_visit_with(self),
+                }
+            }
+
+            fn visit_binder<T: TypeVisitable<'t>>(&mut self, binder: Binder<'t, T>) {
+                self.outtermost_debruijn.0 += 1;
+                binder.value.visit_with(self);
+                self.outtermost_debruijn.0 -= 1;
+            }
+        }
+
+        value.visit_with(&mut Folder::new());
+        Binder { value, vars: &[] }
+    }
+
+    pub fn instantiate_with_infer(self, infcx: &mut InferCtxt<'t>, span: Span) -> T
+    where
+        T: TypeFoldable<'t>,
+    {
+        struct Folder<'a, 't> {
+            infcx: &'a mut InferCtxt<'t>,
+            outtermost_debruijn: DebruijnIndex,
+            span: Span,
+        }
+        impl<'a, 't> Folder<'a, 't> {
+            fn new(infcx: &'a mut InferCtxt<'t>, span: Span) -> Self {
+                Self {
+                    infcx,
+                    span,
+                    outtermost_debruijn: DebruijnIndex(0),
+                }
+            }
+        }
+        impl<'a, 't> TypeFolder<'t> for Folder<'a, 't> {
+            fn tcx(&self) -> &'t TirCtx<'t> {
+                self.infcx.tcx
+            }
+
+            fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
+                match ty {
+                    Ty::Bound(debruijn, _) if *debruijn == self.outtermost_debruijn => self
+                        .infcx
+                        .tcx
+                        .arena
+                        .alloc(Ty::Infer(self.infcx.new_var(self.span))),
+                    _ => ty.super_fold_with(self),
+                }
+            }
+
+            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+                self.outtermost_debruijn.0 += 1;
+                let r = binder.value.fold_with(self);
+                self.outtermost_debruijn.0 -= 1;
+                Binder {
+                    value: r,
+                    vars: binder.vars,
+                }
+            }
+        }
+
+        Folder::new(infcx, span).fold_binder(self).skip_binder()
+    }
+
+    pub fn enter_forall<U>(self, infcx: &mut InferCtxt<'t>, f: impl FnOnce(T) -> U) -> U
+    where
+        T: TypeFoldable<'t>,
+    {
+        struct Folder<'a, 't> {
+            infcx: &'a InferCtxt<'t>,
+            outtermost_debruijn: DebruijnIndex,
+        }
+        impl<'a, 't> Folder<'a, 't> {
+            fn new(infcx: &'a InferCtxt<'t>) -> Self {
+                Self {
+                    infcx,
+                    outtermost_debruijn: DebruijnIndex(0),
+                }
+            }
+        }
+        impl<'a, 't> TypeFolder<'t> for Folder<'a, 't> {
+            fn tcx(&self) -> &'t TirCtx<'t> {
+                self.infcx.tcx
+            }
+
+            fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
+                match ty {
+                    Ty::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => self
+                        .infcx
+                        .tcx
+                        .arena
+                        .alloc(Ty::Placeholder(self.infcx.current_universe(), *var)),
+                    _ => ty.super_fold_with(self),
+                }
+            }
+
+            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+                self.outtermost_debruijn.0 += 1;
+                let r = binder.value.fold_with(self);
+                self.outtermost_debruijn.0 -= 1;
+                Binder {
+                    value: r,
+                    vars: binder.vars,
+                }
+            }
+        }
+
+        infcx.enter_new_universe();
+        let inner = Folder::new(infcx).fold_binder(self).skip_binder();
+        let r = f(inner);
+        infcx.exit_current_universe();
+        r
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]

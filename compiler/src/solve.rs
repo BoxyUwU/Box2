@@ -1,14 +1,14 @@
-use crate::tir::{Bounds, GenArgs, TirId, Ty};
+use crate::tir::{Binder, Bounds, GenArgs, TirId, Ty};
 
 pub struct Goal<'t> {
     pub bounds: Bounds<'t>,
-    pub kind: GoalKind<'t>,
+    pub kind: Binder<'t, GoalKind<'t>>,
 }
 
 pub enum GoalKind<'t> {
-    WellFormed(Ty<'t>),
-    NormalizesTo(TirId, GenArgs<'t>, Ty<'t>),
-    Equate(Ty<'t>, Ty<'t>),
+    WellFormed(&'t Ty<'t>),
+    StructurallyNorm(TirId, GenArgs<'t>, &'t Ty<'t>),
+    Equate(&'t Ty<'t>, &'t Ty<'t>),
     Trait(TirId, GenArgs<'t>),
 }
 

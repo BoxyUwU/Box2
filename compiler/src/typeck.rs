@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     iter::FromIterator,
+    marker::PhantomData,
     ops::{Deref, DerefMut},
 };
 
@@ -156,7 +157,7 @@ pub fn typeck_fn<'ast, 't>(
                     Ty::Infer(infer_id) => errs.push(TypeckError::UnconstrainedInfer(
                         id,
                         infer_id,
-                        tcx.infcx.infer_spans[&infer_id],
+                        tcx.infcx.span_of_var(infer_id),
                     )),
                     _ => {
                         tys.insert(id, ty);
@@ -215,7 +216,7 @@ impl<'t> Ty<'t> {
                 format!("{}[{}]", alias.name, pretty_args)
             }
             Ty::Bound(db, bv) => format!("^{}_{}", db.0, bv.0),
-            Ty::Placeholder(u, bv) => format!("!{}_{}", u.0, bv.0),
+            Ty::Placeholder(u, bv) => format!("!{}_{}", u, bv.0),
             Ty::Int => "int".into(),
             Ty::Float => "float".into(),
             Ty::Error => "{ type error }".into(),
@@ -226,11 +227,91 @@ impl<'t> Ty<'t> {
 #[derive(Debug)]
 pub struct ExpectedFound<'t>(pub Ty<'t>, pub Ty<'t>, pub Span);
 
+#[derive(Copy, Clone)]
+pub enum InferVarValue<'t> {
+    Known { known: &'t Ty<'t> },
+    Unknown { universe: Universe },
+}
+
+#[derive(Copy, Clone)]
+pub enum Unification<'t> {
+    Unconstrained(InferVarValue<'t>),
+    EqTo(InferId),
+}
+
+pub struct TyVarStorage<'t> {
+    unifications: Vec<Unification<'t>>,
+    spans: Vec<Span>,
+}
+impl<'t> TyVarStorage<'t> {
+    pub fn new() -> Self {
+        Self {
+            unifications: vec![],
+            spans: vec![],
+        }
+    }
+
+    pub fn new_key(&mut self, u: Universe, sp: Span) -> InferId {
+        self.unifications
+            .push(Unification::Unconstrained(InferVarValue::Unknown {
+                universe: u,
+            }));
+        self.spans.push(sp);
+        InferId((self.unifications.len() - 1) as u32)
+    }
+
+    pub fn probe_var(&self, mut var: InferId) -> (InferId, InferVarValue<'t>) {
+        loop {
+            match self.unifications[var.0 as usize] {
+                Unification::Unconstrained(unconstrained_value) => {
+                    return (var, unconstrained_value)
+                }
+                Unification::EqTo(new_var) => var = new_var,
+            }
+        }
+    }
+
+    pub fn instantiate(&mut self, var: InferId, to: &'t Ty<'t>) {
+        let (id, value) = self.probe_var(var);
+        assert!(matches!(value, InferVarValue::Unknown { .. }));
+        assert!(!matches!(to, Ty::Infer(_)));
+
+        self.unifications[id.0 as usize] =
+            Unification::Unconstrained(InferVarValue::Known { known: to });
+    }
+
+    pub fn unify_vars(&mut self, v1: InferId, v2: InferId) {
+        let v1 = self.probe_var(v1);
+        let v2 = self.probe_var(v2);
+
+        let unified_value = match (v1.1, v2.1) {
+            (InferVarValue::Known { .. }, InferVarValue::Known { .. }) => {
+                unreachable!("attempted to unify two vars which are already resolved to non infers")
+            }
+            (InferVarValue::Known { .. }, InferVarValue::Unknown { .. }) => v1.1,
+            (InferVarValue::Unknown { .. }, InferVarValue::Known { .. }) => v2.1,
+            (InferVarValue::Unknown { universe: u1 }, InferVarValue::Unknown { universe: u2 }) => {
+                InferVarValue::Unknown {
+                    universe: if u1.idx() < u2.idx() { u1 } else { u2 },
+                }
+            }
+        };
+
+        let (value_var, redirect_var) = if v1.0 .0 < v2.0 .0 {
+            (v1.0, v2.0)
+        } else {
+            (v2.0, v1.0)
+        };
+
+        self.unifications[value_var.0 as usize] = Unification::Unconstrained(unified_value);
+        self.unifications[redirect_var.0 as usize] = Unification::EqTo(value_var);
+    }
+}
+
 pub struct InferCtxt<'t> {
     pub tcx: &'t TirCtx<'t>,
-    next_infer_id: InferId,
-    constraints: HashMap<InferId, Ty<'t>>,
-    infer_spans: HashMap<InferId, Span>,
+    ty_var_storage: TyVarStorage<'t>,
+    universes: UniverseStorage,
 }
 impl<'t> Deref for InferCtxt<'t> {
     type Target = TirCtx<'t>;
@@ -243,9 +324,8 @@ impl<'t> InferCtxt<'t> {
     fn new(tcx: &'t TirCtx<'t>) -> Self {
         Self {
             tcx,
-            next_infer_id: InferId(0),
-            constraints: HashMap::new(),
-            infer_spans: HashMap::new(),
+            ty_var_storage: TyVarStorage::new(),
+            universes: UniverseStorage::new(),
         }
     }
 
@@ -253,14 +333,63 @@ impl<'t> InferCtxt<'t> {
         self.tcx
     }
 
-    pub fn new_var(&mut self, span: Span) -> InferId {
-        let id = self.next_infer_id;
-        self.infer_spans.insert(id, span);
-        self.next_infer_id.0 += 1;
-        id
+    pub fn current_universe(&self) -> Universe {
+        self.universes.current_universe()
     }
 
-    fn deeply_resolve_ty(&self, ty: Ty<'t>) -> Ty<'t> {
+    pub fn enter_new_universe(&mut self) -> Universe {
+        self.universes.enter_new_universe()
+    }
+
+    pub fn exit_current_universe(&mut self) {
+        self.universes.exit_current_universe()
+    }
+
+    pub fn is_universe_alive(&self, universe: Universe) -> bool {
+        self.universes.is_universe_alive(universe)
+    }
+
+    pub fn new_var(&mut self, span: Span) -> InferId {
+        self.ty_var_storage.new_key(self.current_universe(), span)
+    }
+
+    pub fn instantiate_var(&mut self, var: InferId, to: &'t Ty<'t>) {
+        self.ty_var_storage.instantiate(var, to);
+    }
+
+    pub fn unify_vars(&mut self, var1: InferId, var2: InferId) {
+        self.ty_var_storage.unify_vars(var1, var2);
+    }
+
+    pub fn universe_of_var(&self, var: InferId) -> Universe {
+        match self.ty_var_storage.probe_var(var).1 {
+            InferVarValue::Known { .. } => {
+                panic!("universe_of_var called on var that was unified with a non infer")
+            }
+            InferVarValue::Unknown { universe } => universe,
+        }
+    }
+
+    pub fn span_of_var(&self, var: InferId) -> Span {
+        self.ty_var_storage.spans[var.0 as usize]
+    }
+
+    pub fn shallow_resolve_var(&self, var: InferId) -> Ty<'t> {
+        let (var, value) = self.ty_var_storage.probe_var(var);
+        match value {
+            InferVarValue::Known { known } => *known,
+            InferVarValue::Unknown { .. } => Ty::Infer(var),
+        }
+    }
+
+    pub fn shallow_resolve_ty(&self, ty: Ty<'t>) -> Ty<'t> {
+        match ty {
+            Ty::Infer(var) => self.shallow_resolve_var(var),
+            _ => ty,
+        }
+    }
+
+    pub fn deeply_resolve_ty(&self, ty: Ty<'t>) -> Ty<'t> {
         struct DeeplyResolve<'a, 't> {
             infcx: &'a InferCtxt<'t>,
         }
@@ -278,28 +407,17 @@ impl<'t> InferCtxt<'t> {
                 ty.super_fold_with(self)
             }
 
-            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+            fn fold_binder<T: TypeFoldable<'t>>(
+                &mut self,
+                _binder: Binder<'t, T>,
+            ) -> Binder<'t, T> {
                 unreachable!("binders in types are not supported");
             }
         }
         *DeeplyResolve { infcx: self }.fold_ty(&*self.tcx().arena.alloc(ty))
     }
 
-    fn shallow_resolve_ty(&self, mut ty: Ty<'t>) -> Ty<'t> {
-        loop {
-            let infer = match ty {
-                Ty::Infer(inf) => inf,
-                _ => return ty,
-            };
-
-            match self.constraints.get(&infer) {
-                None => return ty,
-                Some(&resolved_ty) => ty = resolved_ty,
-            };
-        }
-    }
-
-    fn eq(
+    pub fn eq(
         &mut self,
         a: Ty<'t>,
         b: Ty<'t>,
@@ -387,7 +505,7 @@ impl<'t> FallibleTypeFolder<'t> for Generalizer<'_, 't> {
 
     fn try_fold_binder<T: TypeFoldable<'t>>(
         &mut self,
-        binder: Binder<'t, T>,
+        _binder: Binder<'t, T>,
     ) -> Result<Binder<'t, T>, Self::Error> {
         unreachable!("binders in types are not supported");
     }
@@ -407,7 +525,7 @@ impl<'a, 't> Equate<'a, 't> {
             let tcx: &TirCtx<'_> = equate.infcx.tcx();
             match Generalizer::new(equate.infcx, var).try_fold_ty(tcx.arena.alloc(with)) {
                 Ok(new_a) => {
-                    equate.infcx.constraints.try_insert(var, *new_a).unwrap();
+                    equate.infcx.instantiate_var(var, new_a);
                     equate.eq(*new_a, with)
                 }
                 Err(()) => Err(NoSolution),
@@ -420,7 +538,7 @@ impl<'a, 't> Equate<'a, 't> {
             (Ty::Infer(a), Ty::Infer(b)) => match a == b {
                 true => Ok(()),
                 false => {
-                    self.infcx.constraints.try_insert(a, Ty::Infer(b)).unwrap();
+                    self.infcx.unify_vars(a, b);
                     Ok(())
                 }
             },
@@ -431,7 +549,13 @@ impl<'a, 't> Equate<'a, 't> {
             (alias @ Ty::Alias(_, _), ty) | (ty, alias @ Ty::Alias(_, _)) => {
                 self.goals.push(Goal {
                     bounds: self.bounds,
-                    kind: GoalKind::Equate(alias, ty),
+                    kind: Binder::dummy(
+                        self.infcx.tcx,
+                        GoalKind::Equate(
+                            self.infcx.tcx.arena.alloc(alias),
+                            self.infcx.tcx.arena.alloc(ty),
+                        ),
+                    ),
                 });
                 Ok(())
             }
