@@ -356,8 +356,9 @@ impl<'t> TypeFoldable<'t> for Response<'t> {
 //
 //
 
-trait TypeVisitableExt<'t> {
+pub trait TypeVisitableExt<'t> {
     fn references_err(&self) -> bool;
+    fn has_escaping_bound_vars(&self) -> bool;
 }
 
 impl<'t, T: TypeVisitable<'t>> TypeVisitableExt<'t> for T {
@@ -391,5 +392,32 @@ impl<'t, T: TypeVisitable<'t>> TypeVisitableExt<'t> for T {
         let mut visitor = ErrVisitor(false);
         self.visit_with(&mut visitor);
         visitor.0
+    }
+
+    fn has_escaping_bound_vars(&self) -> bool {
+        struct HasEscapingBoundVars {
+            result: bool,
+            escaping_level: DebruijnIndex,
+        }
+
+        impl<'t> TypeVisitor<'t> for HasEscapingBoundVars {
+            fn visit_ty(&mut self, ty: &'t Ty<'t>) {
+                match ty {
+                    Ty::Bound(debruijn, _) if debruijn.0 >= self.escaping_level.0 => {
+                        self.result = true;
+                        return;
+                    }
+                    _ => ty.super_visit_with(self),
+                }
+            }
+
+            fn visit_binder<T: TypeVisitable<'t>>(&mut self, binder: Binder<'t, T>) {
+                self.escaping_level.0 += 1;
+                binder.skip_binder().visit_with(self);
+                self.escaping_level.0 -= 1;
+            }
+        }
+
+        todo!()
     }
 }

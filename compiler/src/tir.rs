@@ -7,7 +7,10 @@ use codespan_reporting::diagnostic::Diagnostic;
 use crate::{
     ast,
     resolve::Res,
-    tir::visit::{TypeFolder, TypeSuperFoldable, TypeSuperVisitable, TypeVisitable, TypeVisitor},
+    tir::visit::{
+        TypeFolder, TypeSuperFoldable, TypeSuperVisitable, TypeVisitable, TypeVisitableExt,
+        TypeVisitor,
+    },
     tokenize::{Literal, Span},
     typeck::InferCtxt,
 };
@@ -178,6 +181,8 @@ impl<T> EarlyBinder<T> {
     where
         T: TypeFoldable<'t>,
     {
+        assert!(!args.has_escaping_bound_vars());
+
         struct Folder<'t> {
             args: GenArgs<'t>,
             tcx: &'t TirCtx<'t>,
