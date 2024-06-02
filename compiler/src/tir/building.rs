@@ -455,7 +455,7 @@ pub fn build_ty<'t>(
             }
         },
         ast::TyKind::Path(path) => {
-            let (_, args) = build_args_for_path(&path, tcx, resolutions, item_generics);
+            let args = build_args_for_path(&path, tcx, resolutions, item_generics);
             match resolutions[&ty.id] {
                 Res::Def(DefKind::Adt, id) => {
                     let tir_id = tcx.get_id(id).unwrap();
@@ -491,7 +491,9 @@ pub fn build_ty<'t>(
                     EarlyBinder(tcx.arena().alloc(Ty::Error))
                 }
 
-                Res::Def(DefKind::Field, _) => unreachable!(),
+                Res::Err => EarlyBinder(tcx.arena().alloc(Ty::Error)),
+
+                Res::Def(DefKind::Impl, _) | Res::Def(DefKind::Field, _) => unreachable!(),
             }
         }
     }
@@ -502,7 +504,7 @@ pub fn build_args_for_path<'t>(
     tcx: &mut impl TirBuilder<'t>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
     generics: &mut InScopeBinders,
-) -> (TirId, EarlyBinder<GenArgs<'t>>) {
+) -> EarlyBinder<GenArgs<'t>> {
     let mut args = vec![];
 
     for seg in path.segments {
@@ -510,12 +512,7 @@ pub fn build_args_for_path<'t>(
         args.extend(seg.skip_binder().args.0.into_iter().map(|arg| *arg));
     }
 
-    let (Res::Def(_, id) | Res::Local(id)) = resolutions[&path.segments.last().unwrap().id];
-
-    (
-        tcx.get_id(id).unwrap(),
-        EarlyBinder(GenArgs(tcx.arena().alloc_slice_fill_iter(args))),
-    )
+    EarlyBinder(GenArgs(tcx.arena().alloc_slice_fill_iter(args)))
 }
 
 pub fn build_path_seg<'t, T: TirBuilder<'t>>(
@@ -537,9 +534,8 @@ pub fn build_path_seg<'t, T: TirBuilder<'t>>(
 
     let res = resolutions[&seg.id].map_id(|id| tcx.get_id(id).unwrap());
     let seg = match res {
-        Res::Def(DefKind::TypeAlias | DefKind::Adt | DefKind::Func | DefKind::Trait, _) => {
+        Res::Def(DefKind::TypeAlias | DefKind::Adt | DefKind::Func | DefKind::Trait, id) => {
             let args = lower_args(tcx, generics, seg.args);
-            let (Res::Def(_, id) | Res::Local(id)) = res;
             let generics = tcx.get_generics(id);
 
             if args.0.len() != generics.params.len() {
@@ -564,7 +560,11 @@ pub fn build_path_seg<'t, T: TirBuilder<'t>>(
                 res,
             }
         }
-        Res::Def(DefKind::Field, _) => unreachable!("paths cant resolve to fields"),
+        Res::Def(DefKind::Field | DefKind::Impl, _) => unreachable!("paths cant resolve to fields"),
+        Res::Err => PathSeg {
+            args: GenArgs(&[]),
+            res: tir::Res::Err,
+        },
         Res::Local(_) => panic!("no"),
     };
     EarlyBinder(tcx.arena().alloc(seg))
@@ -670,15 +670,16 @@ pub fn build_clause<'a, 't>(
             }
         }
         ast::ClauseKind::Trait(path) => match resolutions[&path.segments.last().unwrap().id] {
-            Res::Def(DefKind::Trait, _) => {
-                let (id, args) = build_args_for_path(path, tir, resolutions, in_scope_binders);
+            Res::Def(DefKind::Trait, id) => {
+                let id = tir.get_id(id).unwrap();
+                let args = build_args_for_path(path, tir, resolutions, in_scope_binders);
                 Some(tir::Clause::Trait(id, args.skip_binder()))
             }
-            Res::Def(_, _) => {
+            Res::Local(_) | Res::Def(_, _) => {
                 tir.err(diag_non_trait_resolution_of_trait_bound(path.span));
                 None
             }
-            Res::Local(_) => unreachable!(),
+            Res::Err => None,
         },
         ast::ClauseKind::Bound(binder) => {
             let bound_clause = in_scope_binders.try_lower_binder(

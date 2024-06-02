@@ -697,26 +697,28 @@ pub fn typeck_expr<'ast, 't>(
             let id = match tcx.resolutions.get(&this_expr.id) {
                 Some(Res::Def(DefKind::Adt, id)) => *id,
                 Some(Res::Def(DefKind::Variant, id)) => tcx.ast.get_variants_adt(*id).id,
-                // >!?!?!:<
-                None => return,
+                // FIXME: Probably we should still attempt to typeck the field init exprs
+                // with an expected type of `Ty::Error`.
+                Some(Res::Err) => return,
                 _ => unreachable!(),
             };
             let id = tcx.get_id(id).unwrap();
-            let (_, args) = build_args_for_path(&path, tcx, tcx.resolutions, in_scope_binders);
+            let args = build_args_for_path(&path, tcx, tcx.resolutions, in_scope_binders);
             let args = args.instantiate_root_placeholders(tcx.tcx());
             _ = tcx.eq(Ty::Adt(id, args), Ty::Infer(node_tys[&this_expr.id]), span);
 
             for field_init in field_inits {
                 let var = tcx.infcx.new_var(field_init.span);
                 node_tys.insert(field_init.expr.id, var);
-                let field_id = match tcx.resolutions.get(&field_init.id) {
-                    Some(Res::Def(DefKind::Field, id)) => *id,
+                let field_ty = match tcx.resolutions.get(&field_init.id) {
+                    Some(Res::Def(DefKind::Field, field_id)) => {
+                        let field_def = tcx.get_item(tcx.get_id(*field_id).unwrap()).unwrap_field();
+                        field_def.ty.instantiate(args, tcx.tcx())
+                    }
+                    Some(Res::Err) => tcx.arena().alloc(Ty::Error),
                     // haha,,,, :,(
-                    None => return,
                     _ => unreachable!(),
                 };
-                let field_def = tcx.get_item(tcx.get_id(field_id).unwrap()).unwrap_field();
-                let field_ty = field_def.ty.instantiate(args, tcx.tcx());
                 _ = tcx.eq(*field_ty, Ty::Infer(var), field_init.span);
                 typeck_expr(field_init.expr, tcx, in_scope_binders, node_tys);
             }
@@ -724,8 +726,9 @@ pub fn typeck_expr<'ast, 't>(
         ast::ExprKind::Path(path @ ast::Path { span, .. }) => {
             let res_ty = match tcx.resolutions[&this_expr.id] {
                 Res::Local(id) => Ty::Infer(node_tys[&id]),
-                Res::Def(DefKind::Func, _) => {
-                    let (id, args) = building::build_args_for_path(
+                Res::Def(DefKind::Func, id) => {
+                    let id = tcx.get_id(id).unwrap();
+                    let args = building::build_args_for_path(
                         &path,
                         tcx,
                         tcx.resolutions,
