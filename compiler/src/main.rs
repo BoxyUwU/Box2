@@ -25,6 +25,7 @@ macro_rules! unwrap_matches {
 mod ast;
 mod parser;
 mod resolve;
+mod scopegraph;
 mod solve;
 mod tir;
 mod tokenize;
@@ -35,7 +36,6 @@ fn main() {
     use tokenize::Tokenizer;
 
     let path = std::env::args().nth(1).expect("give me a path >:(");
-    let nodes = Nodes::new();
     let code = std::fs::read_to_string(path).expect("give me a PATH >:(");
 
     let mut files = codespan_reporting::files::SimpleFiles::new();
@@ -45,6 +45,7 @@ fn main() {
     );
     let config = codespan_reporting::term::Config::default();
 
+    let nodes = Nodes::new();
     let root_mod = match parser::parse_crate(&mut Tokenizer::new(&code), &nodes) {
         Ok(a) => a,
         Err(diag) => {
@@ -53,22 +54,59 @@ fn main() {
         }
     };
 
-    let mut resolver = resolve::Resolver::new(&nodes);
+    let crate_scopegraph = resolve::build_graph_for_crate(root_mod);
+    let mut resolver = resolve::Resolver::new(&crate_scopegraph);
     resolver.resolve_mod(root_mod);
-    for diag in &resolver.errors {
-        codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
-    }
-    if resolver.errors.len() > 0 {
-        return;
+    let (resolution_errors, resolutions) = resolver.into_outputs();
+
+    for error in resolution_errors {
+        match error {
+            resolve::ResolutionError::UnresolvedLexicalIdentifier {
+                ident,
+                in_scope: _,
+                cause_expr,
+            } => {
+                let span = nodes.get(cause_expr).unwrap_path_seg().span;
+
+                let diag = Diagnostic::error()
+                    .with_message(format!("failed to resolve `{ident}`"))
+                    .with_labels(vec![Label::primary(0, span)]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+            }
+            resolve::ResolutionError::UnresolvedAssociatedIdentifier {
+                ident,
+                in_scope: _,
+                cause_expr,
+            } => {
+                let span = nodes.get(cause_expr).unwrap_path_seg().span;
+
+                let diag = Diagnostic::error()
+                    .with_message(format!("failed to resolve `{ident}`"))
+                    .with_labels(vec![Label::primary(0, span)]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+            }
+            resolve::ResolutionError::UnresolvedField {
+                ident,
+                on_res: _,
+                cause_expr,
+            } => {
+                let span = nodes.get(cause_expr).unwrap_expr().span();
+
+                let diag = Diagnostic::error()
+                    .with_message(format!("failed to resolve `{ident}`"))
+                    .with_labels(vec![Label::primary(0, span)]);
+                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+            }
+        }
     }
 
     let tir_ctx = tir::TirCtx::new();
     let (tir, ref body_sources, tir_ctx, lowered_ids) =
-        tir::building::build(&nodes, root_mod.id, &resolver.resolutions, &tir_ctx);
+        tir::building::build(&nodes, root_mod.id, &resolutions, &tir_ctx);
 
     let mut checker = typeck::FnChecker {
         ast: &nodes,
-        resolutions: &resolver.resolutions,
+        resolutions: &resolutions,
         typeck_results: HashMap::new(),
         body_sources,
 

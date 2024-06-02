@@ -1,24 +1,36 @@
-error: failed to resolve field_awd
+error: failed to resolve `field_awd`
    ┌─ main.box:13:9
    │
 13 │         field_awd: new FieldTy {},
    │         ^^^^^^^^^
 
-error: type init expr on type with variants
-   ┌─ main.box:16:9
+error: failed to resolve `field`
+   ┌─ main.box:17:9
    │
-16 │     new Bar {
-   │         ^^^
+17 │         field: 10,
+   │         ^^^^^
 
-error: failed to resolve Bazz
+error: failed to resolve `Bazz`
    ┌─ main.box:20:14
    │
 20 │     new Bar::Bazz {};
    │              ^^^^
 
-error: failed to resolve Blah
+error: failed to resolve `Blah`
    ┌─ main.box:22:9
    │
 22 │     new Blah {};
    │         ^^^^
+
+error: could not infer type
+   ┌─ main.box:20:5
+   │
+20 │     new Bar::Bazz {};
+   │     ^^^^^^^^^^^^^^^^
+
+error: could not infer type
+   ┌─ main.box:22:5
+   │
+22 │     new Blah {};
+   │     ^^^^^^^^^^^
 

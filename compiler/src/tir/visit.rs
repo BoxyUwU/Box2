@@ -418,6 +418,11 @@ impl<'t, T: TypeVisitable<'t>> TypeVisitableExt<'t> for T {
             }
         }
 
-        todo!()
+        let mut visitor = HasEscapingBoundVars {
+            result: false,
+            escaping_level: DebruijnIndex(0),
+        };
+        self.visit_with(&mut visitor);
+        visitor.result
     }
 }

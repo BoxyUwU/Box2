@@ -715,18 +715,18 @@ fn parse_fields<'a>(
                 let ty_def = parse_type_def(tok, nodes, Some((name, name_span)))?.unwrap_type_def();
                 type_defs.push(ty_def);
 
+                let seg = nodes.push_path_seg(|id| PathSeg {
+                    ident: ty_def.name,
+                    // FIXME: is this the correct way for us to represent this?
+                    args: GenArgs(&[]),
+                    span: ty_def.name_span,
+                    id,
+                });
+
                 nodes.push_ty(|id| Ty {
                     id,
                     kind: TyKind::Path(Path {
-                        segments: nodes
-                            .arena
-                            .alloc_slice_fill_iter([nodes.push_path_seg(|id| PathSeg {
-                                ident: ty_def.name,
-                                // FIXME: is this the correct way for us to represent this?
-                                args: GenArgs(&[]),
-                                span: ty_def.name_span,
-                                id,
-                            })]),
+                        segments: nodes.arena.alloc_slice_fill_iter([seg]),
                         span: ty_def.name_span,
                     }),
                     span: ty_def.name_span,

@@ -23,7 +23,6 @@ impl<'a> Nodes<'a> {
     pub fn push_node(&'a self, f: impl FnOnce(NodeId) -> Node<'a>) -> &'a Node<'a> {
         let ids = self.ids.borrow();
         let id = NodeId(ids.len());
-        drop(ids);
         let node = f(id);
         if let Node::Item(Item::TypeDef(TypeDef { id, variants, .. })) = node {
             let mut variant_parents = self.variant_parent.borrow_mut();
@@ -32,6 +31,9 @@ impl<'a> Nodes<'a> {
             }
         }
         let node = self.arena.alloc(node);
+        // Hold the lock across the closure to avoid calls to `push_node` inside of `f` which would
+        // result in nodes having duplicate `NodeId`s.
+        drop(ids);
         let mut ids = self.ids.borrow_mut();
         ids.push(&*node);
         node
@@ -387,6 +389,17 @@ pub struct TypeDef<'a> {
     pub generics: Generics<'a>,
     pub bounds: Bounds<'a>,
     pub variants: &'a [&'a VariantDef<'a>],
+}
+
+impl TypeDef<'_> {
+    pub fn is_struct(&self) -> bool {
+        if let [variant] = self.variants {
+            if variant.name.is_none() {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[derive(Copy, Clone, Debug)]

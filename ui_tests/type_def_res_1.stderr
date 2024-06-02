@@ -1,0 +1,6 @@
+error: failed to resolve `EnumIguess`
+   ┌─ main.box:15:16
+   │
+15 │         inner: EnumIguess::Blah::F,
+   │                ^^^^^^^^^^
+
