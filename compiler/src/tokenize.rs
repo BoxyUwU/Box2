@@ -171,21 +171,18 @@ impl<I: Iterator> PeekableTwo<I> {
     }
 }
 
-type MappedSpannedIter<'a> = impl Iterator<Item = (Token<'a>, Span)>;
-
 pub struct Tokenizer<'a> {
-    lex: PeekableTwo<MappedSpannedIter<'a>>,
+    lex: PeekableTwo<Box<dyn Iterator<Item = (Token<'a>, Span)> + 'a>>,
 }
 
 impl<'a> Tokenizer<'a> {
     pub fn new(src: &'a str) -> Self {
-        fn defining_use<'b>(src: &'b str) -> MappedSpannedIter<'b> {
-            Token::lexer(src)
-                .spanned()
-                .map(|(tok, span)| (tok, Span::new(span)))
-        }
         Self {
-            lex: PeekableTwo::new(defining_use(src)),
+            lex: PeekableTwo::new(Box::new(
+                Token::lexer(src)
+                    .spanned()
+                    .map(|(tok, span)| (tok, Span::new(span))),
+            )),
         }
     }
 
