@@ -8,7 +8,7 @@ use crate::{
     scopegraph::*,
 };
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Hash, Debug, Eq, PartialEq)]
 pub enum DefKind {
     Impl,
     Adt,
@@ -20,7 +20,7 @@ pub enum DefKind {
     TypeAlias,
     GenericParam,
 }
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Hash, Debug, Eq, PartialEq)]
 pub enum Res<Id> {
     Def(DefKind, Id),
     Local(Id),
@@ -46,7 +46,7 @@ impl Res<NodeId> {
             Node::Param(_) => Res::Local(id),
             Node::Expr(Expr {
                 id: _,
-                kind: ExprKind::Let(_, _, _),
+                kind: ExprKind::Let { .. },
             }) => Res::Local(id),
             Node::GenericParam(param) => Res::Def(DefKind::GenericParam, param.id),
             Node::Clause(_) | Node::PathSeg(_) | Node::Expr(_) | Node::Ty(_) => unreachable!(),
@@ -106,7 +106,7 @@ impl<'ast, 'sg> Resolver<'ast, 'sg> {
         (self.errors.into_inner(), self.resolutions)
     }
 
-    pub fn resolve_item(&mut self, item: &Item<'_>) {
+    pub fn resolve_item(&mut self, item: &'ast Item<'ast>) {
         match item {
             Item::Mod(m) => self.resolve_mod(m),
             Item::TypeDef(t) => self.resolve_ty_def(t),
@@ -119,7 +119,7 @@ impl<'ast, 'sg> Resolver<'ast, 'sg> {
         };
     }
 
-    pub fn resolve_mod(&mut self, module: &Module<'_>) {
+    pub fn resolve_mod(&mut self, module: &'ast Module<'ast>) {
         let ast::Module {
             id: _,
             visibility: _,
@@ -144,7 +144,7 @@ impl<'ast, 'sg> Resolver<'ast, 'sg> {
         let _ = self.record_res(u.id, res);
     }
 
-    pub fn resolve_impl(&mut self, impl_def: &ast::Impl<'_>) {
+    pub fn resolve_impl(&mut self, impl_def: &'ast ast::Impl<'ast>) {
         let ast::Impl {
             id: _,
             span: _,
@@ -165,7 +165,7 @@ impl<'ast, 'sg> Resolver<'ast, 'sg> {
         }
     }
 
-    pub fn resolve_trait(&mut self, trait_def: &ast::Trait<'_>) {
+    pub fn resolve_trait(&mut self, trait_def: &'ast ast::Trait<'ast>) {
         let ast::Trait {
             id: _,
             span: _,
@@ -202,7 +202,7 @@ impl<'ast, 'sg> Resolver<'ast, 'sg> {
         }
     }
 
-    pub fn resolve_fn(&mut self, func: &ast::Fn<'_>) {
+    pub fn resolve_fn(&mut self, func: &'ast ast::Fn<'ast>) {
         let ast::Fn {
             id: _,
             visibility: _,
@@ -249,14 +249,17 @@ impl<'ast, 'sg> Resolver<'ast, 'sg> {
             }
         }
 
-        impl<'a, 'ast, 'sg> Visitor for ExprResolver<'a, 'ast, 'sg> {
-            fn visit_expr(&mut self, expr: &Expr<'_>) {
+        impl<'a, 'ast, 'sg> Visitor<'ast> for ExprResolver<'a, 'ast, 'sg> {
+            fn visit_expr(&mut self, expr: &'ast Expr<'ast>) {
                 match expr.kind {
-                    ExprKind::Let(_, rhs, _) => self.visit_expr(rhs),
-                    ExprKind::Block(exprs, _) => {
-                        for expr in exprs {
-                            self.visit_expr(expr.0);
-                        }
+                    ExprKind::Let {
+                        param: _,
+                        init,
+                        cont,
+                        sp: _,
+                    } => {
+                        self.visit_expr(init);
+                        self.visit_expr(cont);
                     }
                     ExprKind::BinOp(binop, lhs, rhs, _) => {
                         self.visit_expr(lhs);
@@ -1085,11 +1088,14 @@ fn scope_for_expr_recur<'ast>(
     let parent_scope = scope_swaps.last().unwrap().1;
 
     match expr.kind {
-        ast::ExprKind::Let(binding, rhs, _) => {
+        ast::ExprKind::Let {
+            param: binding,
+            init,
+            cont,
+            sp: _,
+        } => {
             // ignore returned scope, rhs of let statement ends after evaluating it
-            scope_for_expr_recur(graph, rhs, scope_swaps);
-            reset_scope_to(scope_swaps, parent_scope, rhs.id);
-
+            scope_for_expr_recur(graph, init, scope_swaps);
             let new_scope = graph.add_node(
                 vec![(
                     EdgeKind::Defines,
@@ -1098,25 +1104,10 @@ fn scope_for_expr_recur<'ast>(
                 )],
                 vec![(EdgeKind::Lexical, EdgeTarget::Intragraph(parent_scope))],
             );
-            reset_scope_to(scope_swaps, new_scope, expr.id);
-
-            Some(new_scope)
-        }
-        ast::ExprKind::Block(exprs, _) => {
-            let mut scope = parent_scope;
-            for expr in exprs {
-                // we dont reset the scope of statements as any bindings should still be accessible
-                // until the end of the block
-                let new_scope = scope_for_expr_recur(graph, expr.0, scope_swaps);
-                if let Some(new_scope) = new_scope {
-                    scope = new_scope;
-                }
-
-                reset_scope_to(scope_swaps, scope, expr.0.id);
-            }
-
-            // At the end of a block any introduced bindings are unnameable
+            reset_scope_to(scope_swaps, new_scope, init.id);
+            scope_for_expr_recur(graph, cont, scope_swaps);
             reset_scope_to(scope_swaps, parent_scope, expr.id);
+
             None
         }
         ast::ExprKind::BinOp(_, lhs, rhs, _) => {

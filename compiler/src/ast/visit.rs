@@ -1,44 +1,44 @@
 use super::*;
 
-pub trait Visitor: Sized {
+pub trait Visitor<'ast>: Sized {
     #![allow(unused_variables)]
 
-    fn visit_expr(&mut self, expr: &Expr<'_>) {}
+    fn visit_expr(&mut self, expr: &'ast Expr<'ast>) {}
 
-    fn visit_mod(&mut self, module: &Module<'_>) {
+    fn visit_mod(&mut self, module: &'ast Module<'ast>) {
         super_visit_mod(self, module)
     }
-    fn visit_type_def(&mut self, def: &TypeDef<'_>) {
+    fn visit_type_def(&mut self, def: &'ast TypeDef<'ast>) {
         super_visit_type_def(self, def)
     }
-    fn visit_variant_def(&mut self, def: &VariantDef<'_>) {
+    fn visit_variant_def(&mut self, def: &'ast VariantDef<'ast>) {
         super_visit_variant_def(self, def)
     }
-    fn visit_field_def(&mut self, def: &FieldDef<'_>) {
+    fn visit_field_def(&mut self, def: &'ast FieldDef<'ast>) {
         super_visit_field_def(self, def)
     }
-    fn visit_type_alias(&mut self, alias: &TypeAlias<'_>) {
+    fn visit_type_alias(&mut self, alias: &'ast TypeAlias<'ast>) {
         super_visit_type_alias(self, alias)
     }
-    fn visit_fn(&mut self, func: &Fn<'_>) {
+    fn visit_fn(&mut self, func: &'ast Fn<'ast>) {
         super_visit_fn(self, func)
     }
-    fn visit_use(&mut self, u: &Use<'_>) {
+    fn visit_use(&mut self, u: &'ast Use<'ast>) {
         super_visit_use(self, u)
     }
-    fn visit_trait(&mut self, trait_: &Trait<'_>) {
+    fn visit_trait(&mut self, trait_: &'ast Trait<'ast>) {
         super_visit_trait(self, trait_)
     }
-    fn visit_impl(&mut self, impl_: &Impl<'_>) {
+    fn visit_impl(&mut self, impl_: &'ast Impl<'ast>) {
         super_visit_impl(self, impl_)
     }
 
-    fn visit_bounds(&mut self, bounds: &Bounds<'_>) {
+    fn visit_bounds(&mut self, bounds: &'ast Bounds<'ast>) {
         super_visit_bounds(self, bounds)
     }
 }
 
-pub fn super_visit_item<V: Visitor>(v: &mut V, item: &Item<'_>) {
+pub fn super_visit_item<'ast, V: Visitor<'ast>>(v: &mut V, item: &'ast Item<'ast>) {
     match item {
         Item::Mod(m) => v.visit_mod(m),
         Item::TypeDef(t) => v.visit_type_def(t),
@@ -52,19 +52,19 @@ pub fn super_visit_item<V: Visitor>(v: &mut V, item: &Item<'_>) {
     }
 }
 
-pub fn super_visit_mod<V: Visitor>(v: &mut V, module: &Module<'_>) {
+pub fn super_visit_mod<'ast, V: Visitor<'ast>>(v: &mut V, module: &'ast Module<'ast>) {
     for i in module.items {
         super_visit_item(v, i);
     }
 }
 
-pub fn super_visit_type_def<V: Visitor>(v: &mut V, def: &TypeDef<'_>) {
+pub fn super_visit_type_def<'ast, V: Visitor<'ast>>(v: &mut V, def: &'ast TypeDef<'ast>) {
     for variant in def.variants {
         v.visit_variant_def(variant);
     }
 }
 
-pub fn super_visit_variant_def<V: Visitor>(v: &mut V, def: &VariantDef<'_>) {
+pub fn super_visit_variant_def<'ast, V: Visitor<'ast>>(v: &mut V, def: &VariantDef<'ast>) {
     for field in def.field_defs {
         v.visit_field_def(field);
     }
@@ -74,42 +74,45 @@ pub fn super_visit_variant_def<V: Visitor>(v: &mut V, def: &VariantDef<'_>) {
     }
 }
 
-pub fn super_visit_field_def<V: Visitor>(_v: &mut V, _def: &FieldDef<'_>) {}
+pub fn super_visit_field_def<'ast, V: Visitor<'ast>>(_v: &mut V, _def: &'ast FieldDef<'ast>) {}
 
-pub fn super_visit_type_alias<V: Visitor>(v: &mut V, alias: &TypeAlias<'_>) {
+pub fn super_visit_type_alias<'ast, V: Visitor<'ast>>(v: &mut V, alias: &'ast TypeAlias<'ast>) {
     v.visit_bounds(&alias.bounds)
 }
 
-pub fn super_visit_fn<V: Visitor>(v: &mut V, func: &Fn<'_>) {
+pub fn super_visit_fn<'ast, V: Visitor<'ast>>(v: &mut V, func: &'ast Fn<'ast>) {
     v.visit_bounds(&func.bounds);
     if let Some(expr) = func.body {
         v.visit_expr(expr);
     }
 }
 
-pub fn super_visit_use<V: Visitor>(_v: &mut V, _u: &Use<'_>) {}
+pub fn super_visit_use<'ast, V: Visitor<'ast>>(_v: &mut V, _u: &'ast Use<'ast>) {}
 
-pub fn super_visit_assoc_item<V: Visitor>(v: &mut V, assoc_item: &AssocItem<'_>) {
+pub fn super_visit_assoc_item<'ast, V: Visitor<'ast>>(
+    v: &mut V,
+    assoc_item: &'ast AssocItem<'ast>,
+) {
     match assoc_item {
         AssocItem::Fn(f) => v.visit_fn(f),
         AssocItem::Type(t) => v.visit_type_alias(t),
     }
 }
 
-pub fn super_visit_trait<V: Visitor>(v: &mut V, trait_: &Trait<'_>) {
+pub fn super_visit_trait<'ast, V: Visitor<'ast>>(v: &mut V, trait_: &'ast Trait<'ast>) {
     v.visit_bounds(&trait_.bounds);
     for assoc_item in trait_.assoc_items {
         super_visit_assoc_item(v, assoc_item)
     }
 }
 
-pub fn super_visit_impl<V: Visitor>(v: &mut V, impl_: &Impl<'_>) {
+pub fn super_visit_impl<'ast, V: Visitor<'ast>>(v: &mut V, impl_: &'ast Impl<'ast>) {
     v.visit_bounds(&impl_.bounds);
     for assoc_item in impl_.assoc_items {
         super_visit_assoc_item(v, assoc_item)
     }
 }
 
-pub fn super_visit_bounds<V: Visitor>(_v: &mut V, _bounds: &Bounds<'_>) {
+pub fn super_visit_bounds<'ast, V: Visitor<'ast>>(_v: &mut V, _bounds: &'ast Bounds<'ast>) {
     // lol
 }

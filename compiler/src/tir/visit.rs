@@ -5,7 +5,7 @@ use super::*;
 pub trait Visitor<'t>: Sized {
     #![allow(unused_variables)]
 
-    fn visit_expr(&mut self, expr: &Expr<'t>) {}
+    fn visit_term(&mut self, term: &Term<'t>) {}
 
     fn visit_mod(&mut self, module: &Mod<'t>) {
         super_visit_mod(self, module)
@@ -96,114 +96,123 @@ pub fn super_visit_impl<'t, V: Visitor<'t>>(v: &mut V, impl_: &Impl<'t>) {
 //
 //
 
-pub trait TypeVisitor<'t> {
-    fn visit_ty(&mut self, ty: &'t Ty<'t>);
-    fn visit_binder<T: TypeVisitable<'t>>(&mut self, binder: Binder<'t, T>);
+pub trait TermVisitor<'t> {
+    fn visit_term(&mut self, t: &'t Term<'t>);
+    fn visit_binder<T: TermVisitable<'t>>(&mut self, binder: Binder<'t, T>);
 }
-pub trait TypeFolder<'t>: FallibleTypeFolder<'t, Error = core::convert::Infallible> {
+pub trait TermFolder<'t>: FallibleTermFolder<'t, Error = core::convert::Infallible> {
     fn tcx(&self) -> &'t TirCtx<'t>;
-    fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t>;
-    fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T>;
+    fn fold_term(&mut self, term: &'t Term<'t>) -> &'t Term<'t>;
+    fn fold_binder<T: TermFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T>;
 }
-pub trait FallibleTypeFolder<'t> {
+pub trait FallibleTermFolder<'t> {
     type Error;
     fn tcx(&self) -> &'t TirCtx<'t>;
-    fn try_fold_ty(&mut self, ty: &'t Ty<'t>) -> Result<&'t Ty<'t>, Self::Error>;
-    fn try_fold_binder<T: TypeFoldable<'t>>(
+    fn try_fold_term(&mut self, t: &'t Term<'t>) -> Result<&'t Term<'t>, Self::Error>;
+    fn try_fold_binder<T: TermFoldable<'t>>(
         &mut self,
         binder: Binder<'t, T>,
     ) -> Result<Binder<'t, T>, Self::Error>;
 }
 
-impl<'t, F: TypeFolder<'t>> FallibleTypeFolder<'t> for F {
+impl<'t, F: TermFolder<'t>> FallibleTermFolder<'t> for F {
     type Error = core::convert::Infallible;
 
     fn tcx(&self) -> &'t TirCtx<'t> {
-        TypeFolder::tcx(self)
+        TermFolder::tcx(self)
     }
 
-    fn try_fold_ty(&mut self, ty: &'t Ty<'t>) -> Result<&'t Ty<'t>, Self::Error> {
-        Ok(TypeFolder::fold_ty(self, ty))
+    fn try_fold_term(&mut self, t: &'t Term<'t>) -> Result<&'t Term<'t>, Self::Error> {
+        Ok(TermFolder::fold_term(self, t))
     }
 
-    fn try_fold_binder<T: TypeFoldable<'t>>(
+    fn try_fold_binder<T: TermFoldable<'t>>(
         &mut self,
         binder: Binder<'t, T>,
     ) -> Result<Binder<'t, T>, Self::Error> {
-        Ok(TypeFolder::fold_binder(self, binder))
+        Ok(TermFolder::fold_binder(self, binder))
     }
 }
 
-pub trait TypeVisitable<'t>: Sized {
-    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V);
+pub trait TermVisitable<'t>: Sized {
+    fn visit_with<V: TermVisitor<'t>>(&self, v: &mut V);
 }
-pub trait TypeSuperVisitable<'t>: TypeVisitable<'t> {
-    fn super_visit_with<V: TypeVisitor<'t>>(&self, v: &mut V);
+pub trait TermSuperVisitable<'t>: TermVisitable<'t> {
+    fn super_visit_with<V: TermVisitor<'t>>(&self, v: &mut V);
 }
-pub trait TypeFoldable<'t>: Sized {
-    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error>;
-    fn fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
+pub trait TermFoldable<'t>: Sized {
+    fn try_fold_with<V: FallibleTermFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error>;
+    fn fold_with<V: TermFolder<'t>>(self, v: &mut V) -> Self {
         self.try_fold_with(v).unwrap()
     }
 }
-pub trait TypeSuperFoldable<'t>: TypeFoldable<'t> {
-    fn try_super_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error>;
-    fn super_fold_with<V: TypeFolder<'t>>(self, v: &mut V) -> Self {
+pub trait TermSuperFoldable<'t>: TermFoldable<'t> {
+    fn try_super_fold_with<V: FallibleTermFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error>;
+    fn super_fold_with<V: TermFolder<'t>>(self, v: &mut V) -> Self {
         self.try_super_fold_with(v).unwrap()
     }
 }
 
-impl<'t> TypeVisitable<'t> for &'t Ty<'t> {
-    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
-        v.visit_ty(self);
+impl<'t> TermVisitable<'t> for &'t Term<'t> {
+    fn visit_with<V: TermVisitor<'t>>(&self, v: &mut V) {
+        v.visit_term(self);
     }
 }
-impl<'t> TypeSuperVisitable<'t> for &'t Ty<'t> {
-    fn super_visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+impl<'t> TermSuperVisitable<'t> for &'t Term<'t> {
+    fn super_visit_with<V: TermVisitor<'t>>(&self, v: &mut V) {
         match self {
-            Ty::Unit
-            | Ty::Infer(_)
-            | Ty::Bound(_, _)
-            | Ty::Placeholder(_, _)
-            | Ty::Int
-            | Ty::Float
-            | Ty::Error => (),
-            Ty::Alias(_, args) | Ty::FnDef(_, args) | Ty::Adt(_, args) => args.visit_with(v),
+            Term::Unit
+            | Term::Infer(_)
+            | Term::Bound(_, _)
+            | Term::Placeholder(_, _)
+            | Term::IntTy
+            | Term::FloatTy
+            | Term::Error => (),
+            Term::Alias(_, args) | Term::FnDef(_, args) | Term::Adt(_, args) => args.visit_with(v),
+            _ => todo!(),
         }
     }
 }
-impl<'t> TypeFoldable<'t> for &'t Ty<'t> {
-    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
-        v.try_fold_ty(self)
+impl<'t> TermFoldable<'t> for &'t Term<'t> {
+    fn try_fold_with<V: FallibleTermFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+        v.try_fold_term(self)
     }
 }
-impl<'t> TypeSuperFoldable<'t> for &'t Ty<'t> {
-    fn try_super_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+impl<'t> TermSuperFoldable<'t> for &'t Term<'t> {
+    fn try_super_fold_with<V: FallibleTermFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
         Ok(match self {
-            Ty::Unit
-            | Ty::Infer(_)
-            | Ty::Bound(_, _)
-            | Ty::Placeholder(_, _)
-            | Ty::Int
-            | Ty::Float
-            | Ty::Error => self,
+            Term::Unit
+            | Term::Infer(_)
+            | Term::Bound(_, _)
+            | Term::Placeholder(_, _)
+            | Term::IntTy
+            | Term::FloatTy
+            | Term::Error => self,
 
-            Ty::Alias(id, args) => v.tcx().arena.alloc(Ty::Alias(*id, args.try_fold_with(v)?)),
-            Ty::FnDef(id, args) => v.tcx().arena.alloc(Ty::FnDef(*id, args.try_fold_with(v)?)),
-            Ty::Adt(id, args) => v.tcx().arena.alloc(Ty::Adt(*id, args.try_fold_with(v)?)),
+            Term::Alias(id, args) => v
+                .tcx()
+                .arena
+                .alloc(Term::Alias(*id, args.try_fold_with(v)?)),
+            Term::FnDef(id, args) => v
+                .tcx()
+                .arena
+                .alloc(Term::FnDef(*id, args.try_fold_with(v)?)),
+            Term::Adt(id, args) => v.tcx().arena.alloc(Term::Adt(*id, args.try_fold_with(v)?)),
+
+            _ => todo!(),
         })
     }
 }
 
-impl<'t> TypeVisitable<'t> for GenArgs<'t> {
-    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+impl<'t> TermVisitable<'t> for GenArgs<'t> {
+    fn visit_with<V: TermVisitor<'t>>(&self, v: &mut V) {
         for arg in self.0 {
             arg.visit_with(v);
         }
     }
 }
-impl<'t> TypeFoldable<'t> for GenArgs<'t> {
-    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+impl<'t> TermFoldable<'t> for GenArgs<'t> {
+    fn try_fold_with<V: FallibleTermFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
         Ok(GenArgs(
             v.tcx().arena.alloc_slice_fill_iter(
                 self.0
@@ -215,23 +224,8 @@ impl<'t> TypeFoldable<'t> for GenArgs<'t> {
     }
 }
 
-impl<'t> TypeVisitable<'t> for GenArg<'t> {
-    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
-        match self {
-            GenArg::Ty(ty) => v.visit_ty(ty),
-        }
-    }
-}
-impl<'t> TypeFoldable<'t> for GenArg<'t> {
-    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
-        match self {
-            GenArg::Ty(ty) => Ok(GenArg::Ty(v.try_fold_ty(ty)?)),
-        }
-    }
-}
-
-impl<'t> TypeVisitable<'t> for Clause<'t> {
-    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+impl<'t> TermVisitable<'t> for Clause<'t> {
+    fn visit_with<V: TermVisitor<'t>>(&self, v: &mut V) {
         match self {
             Clause::Bound(binder) => binder.value.visit_with(v),
             Clause::AliasEq(_, args, ty) => {
@@ -247,8 +241,8 @@ impl<'t> TypeVisitable<'t> for Clause<'t> {
         }
     }
 }
-impl<'t> TypeFoldable<'t> for Clause<'t> {
-    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+impl<'t> TermFoldable<'t> for Clause<'t> {
+    fn try_fold_with<V: FallibleTermFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
         Ok(match self {
             Clause::Bound(binder) => Clause::Bound(Binder {
                 value: v.tcx().arena.alloc(binder.value.try_fold_with(v)?),
@@ -263,15 +257,15 @@ impl<'t> TypeFoldable<'t> for Clause<'t> {
     }
 }
 
-impl<'t> TypeVisitable<'t> for Bounds<'t> {
-    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+impl<'t> TermVisitable<'t> for Bounds<'t> {
+    fn visit_with<V: TermVisitor<'t>>(&self, v: &mut V) {
         for clause in self.clauses {
             clause.visit_with(v);
         }
     }
 }
-impl<'t> TypeFoldable<'t> for Bounds<'t> {
-    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+impl<'t> TermFoldable<'t> for Bounds<'t> {
+    fn try_fold_with<V: FallibleTermFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
         Ok(Bounds {
             clauses: v.tcx().arena.alloc_slice_fill_iter(
                 self.clauses
@@ -283,8 +277,8 @@ impl<'t> TypeFoldable<'t> for Bounds<'t> {
     }
 }
 
-impl<'t> TypeVisitable<'t> for GoalKind<'t> {
-    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+impl<'t> TermVisitable<'t> for GoalKind<'t> {
+    fn visit_with<V: TermVisitor<'t>>(&self, v: &mut V) {
         match self {
             GoalKind::WellFormed(ty) => ty.visit_with(v),
             GoalKind::StructurallyNorm(_id, args, ty) => {
@@ -300,8 +294,8 @@ impl<'t> TypeVisitable<'t> for GoalKind<'t> {
     }
 }
 
-impl<'t> TypeFoldable<'t> for GoalKind<'t> {
-    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+impl<'t> TermFoldable<'t> for GoalKind<'t> {
+    fn try_fold_with<V: FallibleTermFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
         match self {
             GoalKind::WellFormed(ty) => Ok(GoalKind::WellFormed(ty.try_fold_with(v)?)),
             GoalKind::StructurallyNorm(id, args, ty) => Ok(GoalKind::StructurallyNorm(
@@ -318,16 +312,16 @@ impl<'t> TypeFoldable<'t> for GoalKind<'t> {
     }
 }
 
-impl<'t> TypeVisitable<'t> for VarValues<'t> {
-    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+impl<'t> TermVisitable<'t> for VarValues<'t> {
+    fn visit_with<V: TermVisitor<'t>>(&self, v: &mut V) {
         for ty in self.0 {
             ty.visit_with(v)
         }
     }
 }
 
-impl<'t> TypeFoldable<'t> for VarValues<'t> {
-    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+impl<'t> TermFoldable<'t> for VarValues<'t> {
+    fn try_fold_with<V: FallibleTermFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
         let tys = self
             .0
             .iter()
@@ -339,14 +333,14 @@ impl<'t> TypeFoldable<'t> for VarValues<'t> {
     }
 }
 
-impl<'t> TypeVisitable<'t> for Response<'t> {
-    fn visit_with<V: TypeVisitor<'t>>(&self, v: &mut V) {
+impl<'t> TermVisitable<'t> for Response<'t> {
+    fn visit_with<V: TermVisitor<'t>>(&self, v: &mut V) {
         self.var_values.visit_with(v)
     }
 }
 
-impl<'t> TypeFoldable<'t> for Response<'t> {
-    fn try_fold_with<V: FallibleTypeFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
+impl<'t> TermFoldable<'t> for Response<'t> {
+    fn try_fold_with<V: FallibleTermFolder<'t>>(self, v: &mut V) -> Result<Self, V::Error> {
         Ok(Response {
             var_values: self.var_values.try_fold_with(v)?,
         })
@@ -356,35 +350,27 @@ impl<'t> TypeFoldable<'t> for Response<'t> {
 //
 //
 
-pub trait TypeVisitableExt<'t> {
+pub trait TermVisitableExt<'t> {
     fn references_err(&self) -> bool;
     fn has_escaping_bound_vars(&self) -> bool;
 }
 
-impl<'t, T: TypeVisitable<'t>> TypeVisitableExt<'t> for T {
+impl<'t, T: TermVisitable<'t>> TermVisitableExt<'t> for T {
     fn references_err(&self) -> bool {
         struct ErrVisitor(bool);
 
-        impl<'t> TypeVisitor<'t> for ErrVisitor {
-            fn visit_ty(&mut self, ty: &'_ Ty<'_>) {
-                match ty {
-                    Ty::Unit
-                    | Ty::Infer(_)
-                    | Ty::Bound(_, _)
-                    | Ty::Placeholder(_, _)
-                    | Ty::Int
-                    | Ty::Float => return,
-                    Ty::Alias(_, args) | Ty::FnDef(_, args) | Ty::Adt(_, args) => {
-                        args.visit_with(self)
-                    }
-                    Ty::Error => {
+        impl<'t> TermVisitor<'t> for ErrVisitor {
+            fn visit_term(&mut self, t: &'t Term<'t>) {
+                match t {
+                    Term::Error => {
                         self.0 = true;
                         return;
                     }
+                    _ => t.super_visit_with(self),
                 }
             }
 
-            fn visit_binder<T: TypeVisitable<'t>>(&mut self, binder: Binder<'t, T>) {
+            fn visit_binder<T: TermVisitable<'t>>(&mut self, binder: Binder<'t, T>) {
                 binder.value.visit_with(self);
             }
         }
@@ -400,10 +386,10 @@ impl<'t, T: TypeVisitable<'t>> TypeVisitableExt<'t> for T {
             escaping_level: DebruijnIndex,
         }
 
-        impl<'t> TypeVisitor<'t> for HasEscapingBoundVars {
-            fn visit_ty(&mut self, ty: &'t Ty<'t>) {
+        impl<'t> TermVisitor<'t> for HasEscapingBoundVars {
+            fn visit_term(&mut self, ty: &'t Term<'t>) {
                 match ty {
-                    Ty::Bound(debruijn, _) if debruijn.0 >= self.escaping_level.0 => {
+                    Term::Bound(debruijn, _) if debruijn.0 >= self.escaping_level.0 => {
                         self.result = true;
                         return;
                     }
@@ -411,7 +397,7 @@ impl<'t, T: TypeVisitable<'t>> TypeVisitableExt<'t> for T {
                 }
             }
 
-            fn visit_binder<T: TypeVisitable<'t>>(&mut self, binder: Binder<'t, T>) {
+            fn visit_binder<T: TermVisitable<'t>>(&mut self, binder: Binder<'t, T>) {
                 self.escaping_level.0 += 1;
                 binder.skip_binder().visit_with(self);
                 self.escaping_level.0 -= 1;

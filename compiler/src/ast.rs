@@ -506,8 +506,7 @@ pub struct Expr<'a> {
 impl<'a> Expr<'a> {
     pub fn span(&self) -> Span {
         match &self.kind {
-            ExprKind::Let(_, _, span)
-            | ExprKind::Block(_, span)
+            ExprKind::Let { sp: span, .. }
             | ExprKind::BinOp(_, _, _, span)
             | ExprKind::UnOp(_, _, span)
             | ExprKind::Lit(_, span) => *span,
@@ -521,8 +520,12 @@ impl<'a> Expr<'a> {
 
 #[derive(Copy, Clone, Debug)]
 pub enum ExprKind<'a> {
-    Let(&'a Param<'a>, &'a Expr<'a>, Span),
-    Block(&'a [(&'a Expr<'a>, bool)], Span),
+    Let {
+        param: &'a Param<'a>,
+        init: &'a Expr<'a>,
+        cont: &'a Expr<'a>,
+        sp: Span,
+    },
     BinOp(BinOp, &'a Expr<'a>, &'a Expr<'a>, Span),
     UnOp(UnOp, &'a Expr<'a>, Span),
     Lit(Literal, Span),

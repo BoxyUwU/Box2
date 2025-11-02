@@ -1,6 +1,6 @@
 pub mod canonical;
 
-use crate::tir::{Binder, Bounds, GenArgs, TirId, Ty};
+use crate::tir::{Binder, Bounds, GenArgs, Term, TirId};
 
 pub use canonical::*;
 
@@ -10,9 +10,9 @@ pub struct Goal<'t> {
 }
 
 pub enum GoalKind<'t> {
-    WellFormed(&'t Ty<'t>),
-    StructurallyNorm(TirId, GenArgs<'t>, &'t Ty<'t>),
-    Equate(&'t Ty<'t>, &'t Ty<'t>),
+    WellFormed(&'t Term<'t>),
+    StructurallyNorm(TirId, GenArgs<'t>, &'t Term<'t>),
+    Equate(&'t Term<'t>, &'t Term<'t>),
     Trait(TirId, GenArgs<'t>),
 }
 

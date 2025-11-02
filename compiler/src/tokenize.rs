@@ -30,15 +30,15 @@ impl Into<Range<usize>> for Span {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Literal {
-    Float(f64),
+    Float(u64),
     Int(u64),
 }
 
 impl Literal {
     fn float_from_lex<'a>(lex: &mut logos::Lexer<'a, Token<'a>>) -> Self {
-        Self::Float(f64::from_str(lex.slice()).unwrap())
+        Self::Float(f64::from_str(lex.slice()).unwrap().to_bits())
     }
 
     fn int_from_lex<'a>(lex: &mut logos::Lexer<'a, Token<'a>>) -> Self {
@@ -59,6 +59,7 @@ pub enum Kw {
     For,
     Where,
     New,
+    In,
 }
 
 #[derive(Logos, Copy, Clone, Debug, PartialEq)]
@@ -94,6 +95,7 @@ pub enum Token<'a> {
     #[token("for", |_| Kw::For)]
     #[token("new", |_| Kw::New)]
     #[token("where", |_| Kw::Where)]
+    #[token("in", |_| Kw::In)]
     Kw(Kw),
 
     #[token("::")]

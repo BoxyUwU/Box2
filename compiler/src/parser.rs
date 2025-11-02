@@ -118,6 +118,7 @@ impl Kw {
             Kw::For => "for".into(),
             Kw::Where => "where".into(),
             Kw::New => "new".into(),
+            Kw::In => "in".into(),
         }
     }
 }
@@ -231,8 +232,6 @@ fn parse_expr<'a>(
         }
     } else if let Ok((lit, span)) = tok.next_if_lit() {
         nodes.push_expr(ExprKind::Lit(lit, span))
-    } else if let Ok(_) = tok.peek_if(Token::LBrace) {
-        parse_block_expr(tok, nodes)?
     } else if let Ok(_) = tok.peek_if(Token::Kw(Kw::Let)) {
         parse_let_expr(tok, nodes)?
     } else {
@@ -364,50 +363,23 @@ fn parse_let_expr<'a>(
         .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
     tok.next_if(Token::Eq)
         .map_err(|(found, span)| diag_expected_found("=", found, span))?;
-    let expr = parse_expr(tok, nodes, 0)?;
+    let init = parse_expr(tok, nodes, 0)?;
+    tok.next_if(Token::Kw(Kw::In))
+        .map_err(|(found, span)| diag_expected_found("in", found, span))?;
+    let cont = parse_expr(tok, nodes, 0)?;
+
     let binding = nodes.push_param(|id| Param {
         id,
         ident: name,
         ty: None,
         span: binding_span,
     });
-    Ok(nodes.push_expr(ExprKind::Let(
-        binding,
-        expr,
-        let_start_span.join(expr.span()),
-    )))
-}
-
-pub fn parse_block_expr<'a>(
-    tok: &mut Tokenizer<'a>,
-    nodes: &'a Nodes<'a>,
-) -> Result<&'a Expr<'a>, Diagnostic<usize>> {
-    let (_, start_span) = tok
-        .next_if(Token::LBrace)
-        .map_err(|(found, span)| diag_expected_found("{", found, span))?;
-    let mut stmts = vec![];
-    let end_span = loop {
-        if let Ok((_, end_span)) = tok.next_if(Token::RBrace) {
-            break end_span;
-        }
-
-        let expr = parse_expr(tok, nodes, 0)?;
-        let terminator = tok.next_if(Token::SemiColon).is_ok();
-        if terminator == false {
-            let (_, end_span) = tok
-                .next_if(Token::RBrace)
-                .map_err(|(found, span)| diag_expected_found("} or ;", found, span))?;
-            stmts.push((expr, terminator));
-            break end_span;
-        }
-
-        stmts.push((expr, terminator));
-    };
-
-    Ok(nodes.push_expr(ExprKind::Block(
-        nodes.arena.alloc_slice_fill_iter(stmts),
-        start_span.join(end_span),
-    )))
+    Ok(nodes.push_expr(ExprKind::Let {
+        param: binding,
+        init,
+        cont,
+        sp: let_start_span.join(init.span()),
+    }))
 }
 
 pub fn parse_opt_generic_params<'a>(
@@ -512,7 +484,7 @@ pub fn parse_fn<'a>(
 
     let body = match tok.next_if(Token::SemiColon) {
         Ok(_) => None,
-        Err(_) => Some(parse_block_expr(tok, nodes)?),
+        Err(_) => Some(parse_expr(tok, nodes, 0)?),
     };
     Ok(nodes.push_fn(|id| Fn {
         id,
@@ -1332,11 +1304,11 @@ mod test {
         parse_let_expr(&mut Tokenizer::new("let foo = { 10 + 12; bar }"), &nodes).unwrap();
     }
 
-    #[test]
-    fn block_expr() {
-        let nodes = Nodes::new();
-        parse_block_expr(&mut Tokenizer::new("{ 10 + 14 - 2; -1; {10} }"), &nodes).unwrap();
-    }
+    // #[test]
+    // fn block_expr() {
+    //     let nodes = Nodes::new();
+    //     parse_block_expr(&mut Tokenizer::new("{ 10 + 14 - 2; -1; {10} }"), &nodes).unwrap();
+    // }
 
     #[test]
     fn fn_header() {

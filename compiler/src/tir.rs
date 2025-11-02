@@ -8,14 +8,14 @@ use crate::{
     ast,
     resolve::Res,
     tir::visit::{
-        TypeFolder, TypeSuperFoldable, TypeSuperVisitable, TypeVisitable, TypeVisitableExt,
-        TypeVisitor,
+        TermFolder, TermSuperFoldable, TermSuperVisitable, TermVisitable, TermVisitableExt,
+        TermVisitor,
     },
     tokenize::{Literal, Span},
-    typeck::InferCtxt,
+    typeck2::InferCtxt,
 };
 
-use self::visit::TypeFoldable;
+use self::visit::TermFoldable;
 
 pub mod building;
 pub mod visit;
@@ -52,20 +52,16 @@ impl<'t> TirCtx<'t> {
 pub struct BodyId(usize);
 #[derive(Copy, Clone, Debug)]
 pub struct BodySource<'t> {
-    pub params: &'t [(ast::NodeId, EarlyBinder<&'t Ty<'t>>)],
-    pub ret: EarlyBinder<&'t Ty<'t>>,
-    pub expr: ast::NodeId,
+    pub params: &'t [(ast::NodeId, EarlyBinder<&'t Term<'t>>)],
+    pub ret: EarlyBinder<&'t Term<'t>>,
+    pub term: ast::NodeId,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct TirId(usize);
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct GenArgs<'t>(pub &'t [GenArg<'t>]);
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub enum GenArg<'t> {
-    Ty(&'t Ty<'t>),
-}
+pub struct GenArgs<'a>(pub &'a [&'a Term<'a>]);
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BoundVar(pub u32);
@@ -116,7 +112,7 @@ pub struct UniverseGen(u32);
 
 pub struct UniverseStorage {
     alive_universes: Vec<UniverseGen>,
-    /// Indexed by the `Universe` types `idx` field to find what the previous generation at that index was
+    /// Indexed by the `Universe` Terms `idx` field to find what the previous generation at that index was
     dead_universes: Vec<UniverseGen>,
 }
 impl UniverseStorage {
@@ -179,7 +175,7 @@ pub struct EarlyBinder<T>(T);
 impl<T> EarlyBinder<T> {
     pub fn instantiate<'t>(self, args: GenArgs<'t>, tcx: &'t TirCtx<'t>) -> T
     where
-        T: TypeFoldable<'t>,
+        T: TermFoldable<'t>,
     {
         assert!(!args.has_escaping_bound_vars());
 
@@ -198,23 +194,21 @@ impl<T> EarlyBinder<T> {
             }
         }
 
-        impl<'t> TypeFolder<'t> for Folder<'t> {
+        impl<'t> TermFolder<'t> for Folder<'t> {
             fn tcx(&self) -> &'t TirCtx<'t> {
                 self.tcx
             }
 
-            fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
-                match ty {
-                    Ty::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => {
-                        match self.args.0[var.0 as usize] {
-                            GenArg::Ty(ty) => ty,
-                        }
+            fn fold_term(&mut self, t: &'t Term<'t>) -> &'t Term<'t> {
+                match t {
+                    Term::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => {
+                        self.args.0[var.0 as usize]
                     }
-                    _ => ty.super_fold_with(self),
+                    _ => t.super_fold_with(self),
                 }
             }
 
-            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+            fn fold_binder<T: TermFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
                 self.outtermost_debruijn.0 += 1;
                 let r = binder.value.fold_with(self);
                 self.outtermost_debruijn.0 -= 1;
@@ -230,7 +224,7 @@ impl<T> EarlyBinder<T> {
 
     pub fn instantiate_root_placeholders<'t>(self, tcx: &'t TirCtx<'t>) -> T
     where
-        T: TypeFoldable<'t>,
+        T: TermFoldable<'t>,
     {
         struct Folder<'t> {
             tcx: &'t TirCtx<'t>,
@@ -244,21 +238,22 @@ impl<T> EarlyBinder<T> {
                 }
             }
         }
-        impl<'t> TypeFolder<'t> for Folder<'t> {
+        impl<'t> TermFolder<'t> for Folder<'t> {
             fn tcx(&self) -> &'t TirCtx<'t> {
                 self.tcx
             }
 
-            fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
-                match ty {
-                    Ty::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => {
-                        self.tcx.arena.alloc(Ty::Placeholder(Universe::ROOT, *var))
-                    }
-                    _ => ty.super_fold_with(self),
+            fn fold_term(&mut self, t: &'t Term<'t>) -> &'t Term<'t> {
+                match t {
+                    Term::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => self
+                        .tcx
+                        .arena
+                        .alloc(Term::Placeholder(Universe::ROOT, *var)),
+                    _ => t.super_fold_with(self),
                 }
             }
 
-            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+            fn fold_binder<T: TermFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
                 self.outtermost_debruijn.0 += 1;
                 let r = binder.value.fold_with(self);
                 self.outtermost_debruijn.0 -= 1;
@@ -281,7 +276,7 @@ impl<T> EarlyBinder<T> {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Binder<'t, T> {
     value: T,
-    vars: &'t [BoundVarKind],
+    vars: &'t [BoundVarKind<'t>],
 }
 impl<'t, T> Binder<'t, T> {
     pub fn bind_with_vars(value: T, vars: &'t [BoundVarKind]) -> Self {
@@ -289,7 +284,7 @@ impl<'t, T> Binder<'t, T> {
         Self { value, vars }
     }
 
-    pub fn vars(&self) -> &'t [BoundVarKind] {
+    pub fn vars(&self) -> &'t [BoundVarKind<'t>] {
         self.vars
     }
 
@@ -307,7 +302,7 @@ impl<'t, T> Binder<'t, T> {
 
     pub fn dummy(tcx: &'t TirCtx<'t>, value: T) -> Binder<'t, T>
     where
-        T: TypeVisitable<'t>,
+        T: TermVisitable<'t>,
     {
         struct Folder {
             outtermost_debruijn: DebruijnIndex,
@@ -319,17 +314,17 @@ impl<'t, T> Binder<'t, T> {
                 }
             }
         }
-        impl<'t> TypeVisitor<'t> for Folder {
-            fn visit_ty(&mut self, ty: &'t Ty<'t>) {
-                match ty {
-                    Ty::Bound(debruijn, _) if debruijn.0 >= self.outtermost_debruijn.0 => {
-                        panic!("ty: {:?} with escaping bound vars", ty)
+        impl<'t> TermVisitor<'t> for Folder {
+            fn visit_term(&mut self, t: &'t Term<'t>) {
+                match t {
+                    Term::Bound(debruijn, _) if debruijn.0 >= self.outtermost_debruijn.0 => {
+                        panic!("term: {:?} with escaping bound vars", t)
                     }
-                    _ => ty.super_visit_with(self),
+                    _ => t.super_visit_with(self),
                 }
             }
 
-            fn visit_binder<T: TypeVisitable<'t>>(&mut self, binder: Binder<'t, T>) {
+            fn visit_binder<T: TermVisitable<'t>>(&mut self, binder: Binder<'t, T>) {
                 self.outtermost_debruijn.0 += 1;
                 binder.value.visit_with(self);
                 self.outtermost_debruijn.0 -= 1;
@@ -342,7 +337,7 @@ impl<'t, T> Binder<'t, T> {
 
     pub fn instantiate_with_infer(self, infcx: &mut InferCtxt<'t>, span: Span) -> T
     where
-        T: TypeFoldable<'t>,
+        T: TermFoldable<'t>,
     {
         struct Folder<'a, 't> {
             infcx: &'a mut InferCtxt<'t>,
@@ -358,23 +353,23 @@ impl<'t, T> Binder<'t, T> {
                 }
             }
         }
-        impl<'a, 't> TypeFolder<'t> for Folder<'a, 't> {
+        impl<'a, 't> TermFolder<'t> for Folder<'a, 't> {
             fn tcx(&self) -> &'t TirCtx<'t> {
                 self.infcx.tcx
             }
 
-            fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
-                match ty {
-                    Ty::Bound(debruijn, _) if *debruijn == self.outtermost_debruijn => self
+            fn fold_term(&mut self, t: &'t Term<'t>) -> &'t Term<'t> {
+                match t {
+                    Term::Bound(debruijn, _) if *debruijn == self.outtermost_debruijn => self
                         .infcx
                         .tcx
                         .arena
-                        .alloc(Ty::Infer(self.infcx.new_var(self.span))),
-                    _ => ty.super_fold_with(self),
+                        .alloc(Term::Infer(self.infcx.new_var(self.span))),
+                    _ => t.super_fold_with(self),
                 }
             }
 
-            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+            fn fold_binder<T: TermFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
                 self.outtermost_debruijn.0 += 1;
                 let r = binder.value.fold_with(self);
                 self.outtermost_debruijn.0 -= 1;
@@ -390,7 +385,7 @@ impl<'t, T> Binder<'t, T> {
 
     pub fn enter_forall<U>(self, infcx: &mut InferCtxt<'t>, f: impl FnOnce(T) -> U) -> U
     where
-        T: TypeFoldable<'t>,
+        T: TermFoldable<'t>,
     {
         struct Folder<'a, 't> {
             infcx: &'a InferCtxt<'t>,
@@ -404,23 +399,23 @@ impl<'t, T> Binder<'t, T> {
                 }
             }
         }
-        impl<'a, 't> TypeFolder<'t> for Folder<'a, 't> {
+        impl<'a, 't> TermFolder<'t> for Folder<'a, 't> {
             fn tcx(&self) -> &'t TirCtx<'t> {
                 self.infcx.tcx
             }
 
-            fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
-                match ty {
-                    Ty::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => self
+            fn fold_term(&mut self, t: &'t Term<'t>) -> &'t Term<'t> {
+                match t {
+                    Term::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => self
                         .infcx
                         .tcx
                         .arena
-                        .alloc(Ty::Placeholder(self.infcx.current_universe(), *var)),
-                    _ => ty.super_fold_with(self),
+                        .alloc(Term::Placeholder(self.infcx.current_universe(), *var)),
+                    _ => t.super_fold_with(self),
                 }
             }
 
-            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+            fn fold_binder<T: TermFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
                 self.outtermost_debruijn.0 += 1;
                 let r = binder.value.fold_with(self);
                 self.outtermost_debruijn.0 -= 1;
@@ -440,22 +435,9 @@ impl<'t, T> Binder<'t, T> {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub enum BoundVarKind {
+pub enum BoundVarKind<'t> {
     Ty,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub enum Ty<'t> {
-    Unit,
-    Infer(InferId),
-    FnDef(TirId, GenArgs<'t>),
-    Adt(TirId, GenArgs<'t>),
-    Alias(TirId, GenArgs<'t>),
-    Bound(DebruijnIndex, BoundVar),
-    Placeholder(Universe, BoundVar),
-    Int,
-    Float,
-    Error,
+    Var(&'t Term<'t>),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -481,65 +463,68 @@ pub enum GenParamKind {
     Ty,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 pub struct Path<'t> {
-    pub span: Span,
     pub res: Res<TirId>,
     pub segs: &'t [PathSeg<'t>],
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
 pub struct PathSeg<'t> {
     pub args: GenArgs<'t>,
     pub res: Res<TirId>,
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct Expr<'a> {
-    pub kind: ExprKind<'a>,
-}
-
-#[derive(Copy, Clone, Debug)]
 pub struct Param<'t> {
-    pub ty: EarlyBinder<&'t Ty<'t>>,
+    pub ty: EarlyBinder<&'t Term<'t>>,
     pub span: Span,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum ExprKind<'a> {
-    Let(&'a Param<'a>, &'a Expr<'a>, Span),
-    Block(&'a [(&'a Expr<'a>, bool)], Span),
-    BinOp(BinOp, &'a Expr<'a>, &'a Expr<'a>, Span),
-    UnOp(UnOp, &'a Expr<'a>, Span),
-    Lit(Literal, Span),
+#[derive(PartialEq, Eq, Hash, Copy, Clone, Debug)]
+pub enum Term<'a> {
+    Let {
+        ty: &'a Term<'a>,
+        init: &'a Term<'a>,
+        _in: Binder<'a, &'a Term<'a>>,
+    },
+    BinOp(BinOp, &'a Term<'a>, &'a Term<'a>),
+    UnOp(UnOp, &'a Term<'a>),
+    Lit(Literal),
     Path(Path<'a>),
     FnCall(FnCall<'a>),
     TypeInit(TypeInit<'a>),
-    FieldInit(FieldInit<'a>),
+    Unit,
+    FnDef(TirId, GenArgs<'a>),
+    Adt(TirId, GenArgs<'a>),
+    Alias(TirId, GenArgs<'a>),
+    IntTy,
+    FloatTy,
+    Bound(DebruijnIndex, BoundVar),
+    Placeholder(Universe, BoundVar),
+    Infer(InferId),
+    Error,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct FnCall<'a> {
-    pub func: &'a Expr<'a>,
-    pub args: &'a [&'a Expr<'a>],
-    pub span: Span,
+    pub func: &'a Term<'a>,
+    pub args: &'a [&'a Term<'a>],
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Eq, PartialEq, Hash, Debug, Copy, Clone)]
 pub struct FieldInit<'a> {
     pub field: TirId,
-    pub span: Span,
-    pub expr: &'a Expr<'a>,
+    pub init: &'a Term<'a>,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(PartialEq, Eq, Hash, Debug, Copy, Clone)]
 pub struct TypeInit<'a> {
-    pub path: &'a Expr<'a>,
-    pub field_inits: &'a [&'a FieldInit<'a>],
-    pub span: Span,
+    pub ty: &'a Term<'a>,
+    pub field_inits: &'a [&'a Term<'a>],
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum BinOp {
     Add,
     Sub,
@@ -548,7 +533,7 @@ pub enum BinOp {
     Dot,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum UnOp {
     Neg,
     Call,
@@ -607,7 +592,7 @@ pub struct Fn<'t> {
     pub id: TirId,
     pub name: &'t str,
     pub params: &'t [Param<'t>],
-    pub ret_ty: EarlyBinder<&'t Ty<'t>>,
+    pub ret_ty: EarlyBinder<&'t Term<'t>>,
     pub generics: &'t Generics<'t>,
     pub bounds: EarlyBinder<Bounds<'t>>,
     pub body: Option<BodyId>,
@@ -634,7 +619,7 @@ pub struct Variant<'t> {
 pub struct Field<'t> {
     pub id: TirId,
     pub name: &'t str,
-    pub ty: EarlyBinder<&'t Ty<'t>>,
+    pub ty: EarlyBinder<&'t Term<'t>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -643,7 +628,7 @@ pub struct TyAlias<'t> {
     pub name: &'t str,
     pub generics: &'t Generics<'t>,
     pub bounds: EarlyBinder<Bounds<'t>>,
-    pub ty: Option<EarlyBinder<&'t Ty<'t>>>,
+    pub ty: Option<EarlyBinder<&'t Term<'t>>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -685,7 +670,7 @@ pub struct Bounds<'t> {
 #[derive(Debug, Copy, Clone)]
 pub enum Clause<'t> {
     Bound(Binder<'t, &'t Clause<'t>>),
-    AliasEq(TirId, GenArgs<'t>, &'t Ty<'t>),
+    AliasEq(TirId, GenArgs<'t>, &'t Term<'t>),
     Trait(TirId, GenArgs<'t>),
-    WellFormed(&'t Ty<'t>),
+    WellFormed(&'t Term<'t>),
 }

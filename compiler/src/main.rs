@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 
-use crate::typeck::TypeckError;
+use crate::ast::visit::Visitor;
 
 macro_rules! unwrap_matches {
     ($e:expr, $p:pat) => {
@@ -26,7 +26,8 @@ mod scopegraph;
 mod solve;
 mod tir;
 mod tokenize;
-mod typeck;
+// mod typeck;
+mod typeck2;
 
 fn main() {
     use ast::Nodes;
@@ -101,72 +102,90 @@ fn main() {
     let (tir, ref body_sources, tir_ctx, lowered_ids) =
         tir::building::build(&nodes, root_mod.id, &resolutions, &tir_ctx);
 
-    let mut checker = typeck::FnChecker {
-        ast: &nodes,
+    let mut lowerer = typeck2::Lowerer {
         resolutions: &resolutions,
-        typeck_results: HashMap::new(),
-        body_sources,
-
-        lowered_ids,
-        tir_ctx,
+        tir: tir_ctx,
+        ast: &nodes,
+        id_map: lowered_ids,
+        in_scope_binders: typeck2::InScopeBinders2 { binders: vec![] },
     };
-    tir::visit::super_visit_mod(&mut checker, tir);
 
-    let mut results = checker.typeck_results.into_iter().collect::<Vec<_>>();
-    results.sort_by(|a, b| Ord::cmp(&a.0, &b.0));
-    for e in results.into_iter().flat_map(|(_, r)| r.errs) {
-        match e {
-            TypeckError::ExpectedFound(typeck::ExpectedFound(a, b, span)) => {
-                let diag = Diagnostic::error()
-                    .with_message(format!(
-                        "mismatched types: a:{} b:{}",
-                        a.pretty(&tir_ctx),
-                        b.pretty(&tir_ctx),
-                    ))
-                    .with_labels(vec![Label::primary(0, span)]);
-                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
-            }
-            TypeckError::UnconstrainedInfer(_, _, span) => {
-                let diag = Diagnostic::error()
-                    .with_message(format!("could not infer type"))
-                    .with_labels(vec![Label::primary(0, span)]);
-                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
-            }
-            TypeckError::NonPlaceExprInMutateOp(_, span) => {
-                let diag = Diagnostic::error()
-                    .with_message(format!("invalid place expression",))
-                    .with_labels(vec![Label::primary(0, span)]);
-                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
-            }
-            TypeckError::NonIdentRhsOfDotOp(_, span) => {
-                let diag = Diagnostic::error()
-                    .with_message(format!("not an identifier",))
-                    .with_labels(vec![Label::primary(0, span)]);
-                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
-            }
-            TypeckError::NonStructTyForDotOp(ty, span) => {
-                let diag = Diagnostic::error()
-                    .with_message(format!(
-                        "expected expression to have the type of a struct not `{}`",
-                        ty.pretty(&tir_ctx)
-                    ))
-                    .with_labels(vec![Label::primary(0, span)]);
-                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
-            }
-            TypeckError::FieldOrMethodNotFoundOnTy(ty, ident, span) => {
-                let diag = Diagnostic::error()
-                    .with_message(format!(
-                        "field or method with name `{}` not present on ty `{}`",
-                        ident,
-                        ty.pretty(&tir_ctx)
-                    ))
-                    .with_labels(vec![Label::primary(0, span)]);
-                codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
-            }
+    #[allow(non_local_definitions)]
+    impl<'ast> Visitor<'ast> for typeck2::Lowerer<'ast, '_, '_> {
+        fn visit_fn(&mut self, func: &'ast ast::Fn<'ast>) {
+            let term = self.expr_to_term(func.body.unwrap());
+            dbg!(term);
         }
     }
 
-    for e in tir_ctx.take_errs() {
-        codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &e).unwrap();
-    }
+    lowerer.visit_mod(root_mod);
+
+    // let mut checker = typeck::FnChecker {
+    //     ast: &nodes,
+    //     resolutions: &resolutions,
+    //     typeck_results: HashMap::new(),
+    //     body_sources,
+
+    //     lowered_ids,
+    //     tir_ctx,
+    // };
+    // tir::visit::super_visit_mod(&mut checker, tir);
+
+    // let mut results = checker.typeck_results.into_iter().collect::<Vec<_>>();
+    // results.sort_by(|a, b| Ord::cmp(&a.0, &b.0));
+    // for e in results.into_iter().flat_map(|(_, r)| r.errs) {
+    //     match e {
+    //         TypeckError::ExpectedFound(typeck::ExpectedFound(a, b, span)) => {
+    //             let diag = Diagnostic::error()
+    //                 .with_message(format!(
+    //                     "mismatched types: a:{} b:{}",
+    //                     a.pretty(&tir_ctx),
+    //                     b.pretty(&tir_ctx),
+    //                 ))
+    //                 .with_labels(vec![Label::primary(0, span)]);
+    //             codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+    //         }
+    //         TypeckError::UnconstrainedInfer(_, _, span) => {
+    //             let diag = Diagnostic::error()
+    //                 .with_message(format!("could not infer type"))
+    //                 .with_labels(vec![Label::primary(0, span)]);
+    //             codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+    //         }
+    //         TypeckError::NonPlaceExprInMutateOp(_, span) => {
+    //             let diag = Diagnostic::error()
+    //                 .with_message(format!("invalid place expression",))
+    //                 .with_labels(vec![Label::primary(0, span)]);
+    //             codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+    //         }
+    //         TypeckError::NonIdentRhsOfDotOp(_, span) => {
+    //             let diag = Diagnostic::error()
+    //                 .with_message(format!("not an identifier",))
+    //                 .with_labels(vec![Label::primary(0, span)]);
+    //             codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+    //         }
+    //         TypeckError::NonStructTyForDotOp(ty, span) => {
+    //             let diag = Diagnostic::error()
+    //                 .with_message(format!(
+    //                     "expected expression to have the type of a struct not `{}`",
+    //                     ty.pretty(&tir_ctx)
+    //                 ))
+    //                 .with_labels(vec![Label::primary(0, span)]);
+    //             codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+    //         }
+    //         TypeckError::FieldOrMethodNotFoundOnTy(ty, ident, span) => {
+    //             let diag = Diagnostic::error()
+    //                 .with_message(format!(
+    //                     "field or method with name `{}` not present on ty `{}`",
+    //                     ident,
+    //                     ty.pretty(&tir_ctx)
+    //                 ))
+    //                 .with_labels(vec![Label::primary(0, span)]);
+    //             codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &diag).unwrap();
+    //         }
+    //     }
+    // }
+
+    // for e in tir_ctx.take_errs() {
+    //     codespan_reporting::term::emit(&mut writer.lock(), &config, &files, &e).unwrap();
+    // }
 }

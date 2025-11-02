@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use crate::{
     tir::{
-        visit::{TypeFoldable, TypeFolder, TypeSuperFoldable},
-        Binder, BoundVar, Bounds, DebruijnIndex, InferId, TirCtx, Ty, Universe,
+        visit::{TermFoldable, TermFolder, TermSuperFoldable},
+        Binder, BoundVar, Bounds, DebruijnIndex, InferId, Term, TirCtx, Universe,
     },
     tokenize::Span,
-    typeck::InferCtxt,
+    typeck2::InferCtxt,
 };
 
 pub struct Canonical<'t, T> {
@@ -21,9 +21,9 @@ pub enum CanonicalizerMode {
     Response,
 }
 
-pub struct OriginalValues<'t>(pub &'t [&'t Ty<'t>]);
+pub struct OriginalValues<'t>(pub &'t [&'t Term<'t>]);
 
-pub struct VarValues<'t>(pub &'t [&'t Ty<'t>]);
+pub struct VarValues<'t>(pub &'t [&'t Term<'t>]);
 
 pub struct Response<'t> {
     pub var_values: VarValues<'t>,
@@ -31,22 +31,22 @@ pub struct Response<'t> {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub enum CanonicalVar {
-    ExistentialTy(Universe),
-    UniversalTy(Universe, BoundVar),
+    ExistentialTerm(Universe),
+    UniversalTerm(Universe, BoundVar),
 }
 impl CanonicalVar {
     pub fn universe(&self) -> Universe {
-        let (Self::ExistentialTy(u) | Self::UniversalTy(u, _)) = self;
+        let (Self::ExistentialTerm(u) | Self::UniversalTerm(u, _)) = self;
         *u
     }
 
     pub fn update_universe(&mut self, new_u: Universe) {
-        let (Self::ExistentialTy(u) | Self::UniversalTy(u, _)) = self;
+        let (Self::ExistentialTerm(u) | Self::UniversalTerm(u, _)) = self;
         *u = new_u;
     }
 }
 
-impl<'t, T: TypeFoldable<'t>> Canonical<'t, T> {
+impl<'t, T: TermFoldable<'t>> Canonical<'t, T> {
     fn instantiate(self, infcx: &InferCtxt<'t>, var_values: &VarValues<'t>) -> T {
         struct CanonicalInstantiator<'a, 't> {
             tcx: &'t TirCtx<'t>,
@@ -62,21 +62,21 @@ impl<'t, T: TypeFoldable<'t>> Canonical<'t, T> {
                 }
             }
         }
-        impl<'t> TypeFolder<'t> for CanonicalInstantiator<'_, 't> {
+        impl<'t> TermFolder<'t> for CanonicalInstantiator<'_, 't> {
             fn tcx(&self) -> &'t TirCtx<'t> {
                 self.tcx
             }
 
-            fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
+            fn fold_term(&mut self, ty: &'t Term<'t>) -> &'t Term<'t> {
                 match ty {
-                    Ty::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => {
+                    Term::Bound(debruijn, var) if *debruijn == self.outtermost_debruijn => {
                         self.var_values.0[var.0 as usize]
                     }
                     _ => ty.super_fold_with(self),
                 }
             }
 
-            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+            fn fold_binder<T: TermFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
                 self.outtermost_debruijn.0 += 1;
                 let vars = binder.vars();
                 let r = binder.skip_binder().fold_with(self);
@@ -91,7 +91,7 @@ impl<'t, T: TypeFoldable<'t>> Canonical<'t, T> {
 }
 
 impl<'t> InferCtxt<'t> {
-    pub fn canonicalize<T: TypeFoldable<'t>>(
+    pub fn canonicalize<T: TermFoldable<'t>>(
         &self,
         value: T,
         mode: CanonicalizerMode,
@@ -103,10 +103,10 @@ impl<'t> InferCtxt<'t> {
             mode: CanonicalizerMode,
 
             canonical_vars: Vec<CanonicalVar>,
-            original_vars: Vec<&'t Ty<'t>>,
+            original_vars: Vec<&'t Term<'t>>,
 
-            canonicalized_placeholders: HashMap<(Universe, BoundVar), &'t Ty<'t>>,
-            canonicalized_infers: HashMap<InferId, &'t Ty<'t>>,
+            canonicalized_placeholders: HashMap<(Universe, BoundVar), &'t Term<'t>>,
+            canonicalized_infers: HashMap<InferId, &'t Term<'t>>,
         }
 
         impl<'a, 't> Canonicalizer<'a, 't> {
@@ -125,7 +125,7 @@ impl<'t> InferCtxt<'t> {
                 }
             }
 
-            pub fn canonicalize_placeholder(&mut self, u: Universe, var: BoundVar) -> &'t Ty<'t> {
+            pub fn canonicalize_placeholder(&mut self, u: Universe, var: BoundVar) -> &'t Term<'t> {
                 *self
                     .canonicalized_placeholders
                     .entry((u, var))
@@ -137,60 +137,60 @@ impl<'t> InferCtxt<'t> {
                             CanonicalizerMode::Response => var,
                         };
 
-                        self.canonical_vars.push(CanonicalVar::UniversalTy(
+                        self.canonical_vars.push(CanonicalVar::UniversalTerm(
                             Universe::new_raw(u.idx(), 0),
                             bound_var,
                         ));
                         self.original_vars
-                            .push(self.infcx.tcx.arena.alloc(Ty::Placeholder(u, var)));
+                            .push(self.infcx.tcx.arena.alloc(Term::Placeholder(u, var)));
                         &*self
                             .infcx
                             .tcx
                             .arena
-                            .alloc(Ty::Bound(self.outtermost_debruijn, bound_var))
+                            .alloc(Term::Bound(self.outtermost_debruijn, bound_var))
                     })
             }
 
-            pub fn canonicalize_infer(&mut self, id: InferId) -> &'t Ty<'t> {
+            pub fn canonicalize_infer(&mut self, id: InferId) -> &'t Term<'t> {
                 *self.canonicalized_infers.entry(id).or_insert_with(|| {
                     let idx = self.canonical_vars.len();
                     self.canonical_vars
-                        .push(CanonicalVar::ExistentialTy(Universe::new_raw(
+                        .push(CanonicalVar::ExistentialTerm(Universe::new_raw(
                             self.infcx.universe_of_var(id).idx(),
                             0,
                         )));
                     self.original_vars
-                        .push(self.infcx.tcx.arena.alloc(Ty::Infer(id)));
+                        .push(self.infcx.tcx.arena.alloc(Term::Infer(id)));
                     self.infcx
                         .tcx
                         .arena
-                        .alloc(Ty::Bound(self.outtermost_debruijn, BoundVar(idx as u32)))
+                        .alloc(Term::Bound(self.outtermost_debruijn, BoundVar(idx as u32)))
                 })
             }
         }
 
-        impl<'t> TypeFolder<'t> for Canonicalizer<'_, 't> {
+        impl<'t> TermFolder<'t> for Canonicalizer<'_, 't> {
             fn tcx(&self) -> &'t TirCtx<'t> {
                 self.infcx.tcx
             }
 
-            fn fold_ty(&mut self, ty: &'t Ty<'t>) -> &'t Ty<'t> {
-                let ty = self
+            fn fold_term(&mut self, t: &'t Term<'t>) -> &'t Term<'t> {
+                let t = self
                     .infcx
                     .tcx
                     .arena
-                    .alloc(self.infcx.shallow_resolve_ty(*ty));
+                    .alloc(self.infcx.shallow_resolve_term(*t));
 
-                match ty {
-                    Ty::Placeholder(universe, var) => {
+                match t {
+                    Term::Placeholder(universe, var) => {
                         self.canonicalize_placeholder(*universe, *var)
                     }
-                    Ty::Infer(var) => self.canonicalize_infer(*var),
-                    _ => ty.super_fold_with(self),
+                    Term::Infer(var) => self.canonicalize_infer(*var),
+                    _ => t.super_fold_with(self),
                 }
             }
 
-            fn fold_binder<T: TypeFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
+            fn fold_binder<T: TermFoldable<'t>>(&mut self, binder: Binder<'t, T>) -> Binder<'t, T> {
                 self.outtermost_debruijn.0 += 1;
                 let vars = binder.vars();
                 let value = binder.skip_binder().fold_with(self);
@@ -218,8 +218,9 @@ impl<'t> InferCtxt<'t> {
 
                     let mut update_vars = |existentials: bool| {
                         for var in canonicalizer.canonical_vars.iter_mut() {
-                            if (existentials && matches!(var, CanonicalVar::UniversalTy(_, _)))
-                                || (!existentials && matches!(var, CanonicalVar::ExistentialTy(_)))
+                            if (existentials && matches!(var, CanonicalVar::UniversalTerm(_, _)))
+                                || (!existentials
+                                    && matches!(var, CanonicalVar::ExistentialTerm(_)))
                             {
                                 continue;
                             }
@@ -273,7 +274,7 @@ impl<'t> InferCtxt<'t> {
         )
     }
 
-    pub fn new_from_canonical<T: TypeFoldable<'t>>(
+    pub fn new_from_canonical<T: TermFoldable<'t>>(
         tcx: &'t TirCtx<'t>,
         canonical: Canonical<'t, T>,
     ) -> (InferCtxt<'t>, T, VarValues<'t>) {
@@ -288,12 +289,12 @@ impl<'t> InferCtxt<'t> {
                 .alloc_slice_fill_iter(canonical.vars.into_iter().enumerate().map(
                     |(bound_var, canonical_var)| {
                         &*match canonical_var {
-                            CanonicalVar::ExistentialTy(u) => tcx
+                            CanonicalVar::ExistentialTerm(u) => tcx
                                 .arena
-                                .alloc(Ty::Infer(infcx.new_var_in_universe(*u, Span::new(0..0)))),
-                            CanonicalVar::UniversalTy(u, _) => tcx
+                                .alloc(Term::Infer(infcx.new_var_in_universe(*u, Span::new(0..0)))),
+                            CanonicalVar::UniversalTerm(u, _) => tcx
                                 .arena
-                                .alloc(Ty::Placeholder(*u, BoundVar(bound_var as u32))),
+                                .alloc(Term::Placeholder(*u, BoundVar(bound_var as u32))),
                         }
                     },
                 )),
@@ -330,11 +331,11 @@ impl<'t> InferCtxt<'t> {
                 .arena
                 .alloc_slice_fill_iter(response.vars.iter().map(|var_info| {
                     match var_info {
-                        CanonicalVar::ExistentialTy(_) => self
+                        CanonicalVar::ExistentialTerm(_) => self
                             .tcx
                             .arena
-                            .alloc(Ty::Infer(self.new_var(Span::new(0..0)))),
-                        CanonicalVar::UniversalTy(_, var) => orig_values.0[var.0 as usize],
+                            .alloc(Term::Infer(self.new_var(Span::new(0..0)))),
+                        CanonicalVar::UniversalTerm(_, var) => orig_values.0[var.0 as usize],
                     }
                 })),
         );

@@ -5,7 +5,6 @@ use codespan_reporting::diagnostic::Label;
 use crate::ast::visit::Visitor;
 use crate::ast::{self, NodeId, Nodes};
 use crate::resolve::DefKind;
-use crate::typeck::TypeckCtxt;
 
 use super::super::tir;
 use super::*;
@@ -111,7 +110,7 @@ pub trait TirBuilder<'t> {
     fn err(&self, err: Diagnostic<usize>);
 
     fn allow_infers(&self) -> bool;
-    fn ty_infer(&mut self, span: Span) -> &'t Ty<'t>;
+    fn ty_infer(&mut self, span: Span) -> &'t Term<'t>;
 }
 impl<'t> TirBuilder<'t> for ItemTirBuilder<'t> {
     fn arena(&self) -> &'t Bump {
@@ -138,46 +137,8 @@ impl<'t> TirBuilder<'t> for ItemTirBuilder<'t> {
         false
     }
 
-    fn ty_infer(&mut self, _: Span) -> &'t Ty<'t> {
+    fn ty_infer(&mut self, _: Span) -> &'t Term<'t> {
         unreachable!("cannot create infer vars in `ItemTirBuilder`");
-    }
-}
-impl<'t> TirBuilder<'t> for TypeckCtxt<'_, '_, 't> {
-    fn arena(&self) -> &'t Bump {
-        &self.tcx.arena
-    }
-
-    fn get_id(&self, id: NodeId) -> Option<TirId> {
-        self.lowered_ids.get(&id).copied()
-    }
-
-    fn get_generics(&self, id: TirId) -> &'t Generics<'t> {
-        match self.infcx.tcx.items.borrow().get(&id).unwrap() {
-            Item::Mod(_) | Item::Variant(_) | Item::Field(_) => panic!("no generics on item"),
-
-            Item::Fn(f) => f.generics,
-            Item::Adt(a) => a.generics,
-            Item::TyAlias(t) => t.generics,
-            Item::Trait(t) => t.generics,
-            Item::Impl(i) => i.generics,
-        }
-    }
-
-    fn get_item(&self, id: TirId) -> &'t Item<'t> {
-        self.infcx.tcx.items.borrow().get(&id).unwrap()
-    }
-
-    fn err(&self, err: Diagnostic<usize>) {
-        self.infcx.tcx.err(err)
-    }
-
-    fn allow_infers(&self) -> bool {
-        true
-    }
-
-    fn ty_infer(&mut self, span: Span) -> &'t Ty<'t> {
-        let infer_id = self.infcx.new_var(span);
-        self.arena().alloc(Ty::Infer(infer_id))
     }
 }
 
@@ -307,7 +268,7 @@ pub fn build<'a, 't>(
                 .expect("popping generics when nothing is on stack");
         }
     }
-    impl<'t> ast::visit::Visitor for EarlyTirBuild<'t> {
+    impl<'t> ast::visit::Visitor<'_> for EarlyTirBuild<'t> {
         fn visit_mod(&mut self, module: &ast::Module<'_>) {
             self.tir_builder.new_lowered_tir_id(module.id);
             ast::visit::super_visit_mod(self, module)
@@ -424,7 +385,7 @@ pub fn build<'a, 't>(
             (
                 body_id,
                 BodySource {
-                    expr: expr_id,
+                    term: expr_id,
                     ret: ret_ty,
                     params,
                 },
@@ -445,13 +406,13 @@ pub fn build_ty<'t>(
     tcx: &mut impl TirBuilder<'t>,
     resolutions: &HashMap<NodeId, Res<NodeId>>,
     item_generics: &mut InScopeBinders,
-) -> EarlyBinder<&'t Ty<'t>> {
+) -> EarlyBinder<&'t Term<'t>> {
     match ty.kind {
         ast::TyKind::Infer => match tcx.allow_infers() {
             true => EarlyBinder(tcx.ty_infer(ty.span)),
             false => {
                 tcx.err(diag_infer_var_in_signature(ty.span));
-                EarlyBinder(&Ty::Error)
+                EarlyBinder(&Term::Error)
             }
         },
         ast::TyKind::Path(path) => {
@@ -459,39 +420,39 @@ pub fn build_ty<'t>(
             match resolutions[&ty.id] {
                 Res::Def(DefKind::Adt, id) => {
                     let tir_id = tcx.get_id(id).unwrap();
-                    EarlyBinder(tcx.arena().alloc(Ty::Adt(tir_id, args.skip_binder())))
+                    EarlyBinder(tcx.arena().alloc(Term::Adt(tir_id, args.skip_binder())))
                 }
                 Res::Def(DefKind::TypeAlias, id) => {
                     let tir_id = tcx.get_id(id).unwrap();
-                    EarlyBinder(tcx.arena().alloc(Ty::Alias(tir_id, args.skip_binder())))
+                    EarlyBinder(tcx.arena().alloc(Term::Alias(tir_id, args.skip_binder())))
                 }
                 Res::Def(DefKind::Func, id) => {
                     let tir_id = tcx.get_id(id).unwrap();
-                    EarlyBinder(tcx.arena().alloc(Ty::FnDef(tir_id, args.skip_binder())))
+                    EarlyBinder(tcx.arena().alloc(Term::FnDef(tir_id, args.skip_binder())))
                 }
                 Res::Def(DefKind::GenericParam, id) => {
                     let tir_id = tcx.get_id(id).unwrap();
                     let (debruijn_idx, bound_var) = item_generics.bound_var_for_param(tir_id);
-                    EarlyBinder(tcx.arena().alloc(Ty::Bound(debruijn_idx, bound_var)))
+                    EarlyBinder(tcx.arena().alloc(Term::Bound(debruijn_idx, bound_var)))
                 }
                 Res::Def(DefKind::Variant, _) => {
                     tcx.err(diag_unexpected_res_of_path_ty(path.span, "a variant"));
-                    EarlyBinder(tcx.arena().alloc(Ty::Error))
+                    EarlyBinder(tcx.arena().alloc(Term::Error))
                 }
                 Res::Def(DefKind::Trait, _) => {
                     tcx.err(diag_unexpected_res_of_path_ty(path.span, "a trait"));
-                    EarlyBinder(tcx.arena().alloc(Ty::Error))
+                    EarlyBinder(tcx.arena().alloc(Term::Error))
                 }
                 Res::Def(DefKind::Mod, _) => {
                     tcx.err(diag_unexpected_res_of_path_ty(path.span, "a module"));
-                    EarlyBinder(tcx.arena().alloc(Ty::Error))
+                    EarlyBinder(tcx.arena().alloc(Term::Error))
                 }
                 Res::Local(_) => {
                     tcx.err(diag_unexpected_res_of_path_ty(path.span, "a local"));
-                    EarlyBinder(tcx.arena().alloc(Ty::Error))
+                    EarlyBinder(tcx.arena().alloc(Term::Error))
                 }
 
-                Res::Err => EarlyBinder(tcx.arena().alloc(Ty::Error)),
+                Res::Err => EarlyBinder(tcx.arena().alloc(Term::Error)),
 
                 Res::Def(DefKind::Impl, _) | Res::Def(DefKind::Field, _) => unreachable!(),
             }
@@ -525,9 +486,7 @@ pub fn build_path_seg<'t, T: TirBuilder<'t>>(
         GenArgs(
             tcx.arena()
                 .alloc_slice_fill_iter(args.0.iter().map(|arg| match arg {
-                    ast::GenArg::Ty(ty) => {
-                        GenArg::Ty(build_ty(ty, tcx, resolutions, generics).skip_binder())
-                    }
+                    ast::GenArg::Ty(ty) => build_ty(ty, tcx, resolutions, generics).skip_binder(),
                 })),
         )
     };
@@ -541,9 +500,11 @@ pub fn build_path_seg<'t, T: TirBuilder<'t>>(
             if args.0.len() != generics.params.len() {
                 tcx.err(diag_wrong_gen_args_count(seg.span, generics.params.len()));
                 PathSeg {
-                    args: GenArgs(tcx.arena().alloc_slice_fill_iter(
-                        (0..generics.params.len()).map(|_| GenArg::Ty(&Ty::Error)),
-                    )),
+                    args: GenArgs(
+                        tcx.arena().alloc_slice_fill_iter(
+                            (0..generics.params.len()).map(|_| &Term::Error),
+                        ),
+                    ),
                     res,
                 }
             } else {
@@ -662,7 +623,7 @@ pub fn build_clause<'a, 't>(
             let t1 = build_ty(t1, tir, resolutions, in_scope_binders).skip_binder();
             let t2 = build_ty(t2, tir, resolutions, in_scope_binders).skip_binder();
             match *t1 {
-                Ty::Alias(id, args) => Some(tir::Clause::AliasEq(id, args, t2)),
+                Term::Alias(id, args) => Some(tir::Clause::AliasEq(id, args, t2)),
                 _ => {
                     tir.err(diag_non_alias_in_alias_eq_bound(t1_span));
                     None
@@ -709,7 +670,7 @@ pub fn build_bounds<'a, 't>(
         .collect::<Vec<_>>();
     clauses.extend(params_introduced_with_bounds.iter().map(|param| {
         let (debruijn_idx, bound_var) = in_scope_binders.bound_var_for_param(param.id);
-        tir::Clause::WellFormed(tir.arena().alloc(Ty::Bound(debruijn_idx, bound_var)))
+        tir::Clause::WellFormed(tir.arena().alloc(Term::Bound(debruijn_idx, bound_var)))
     }));
 
     let clauses = tir.arena().alloc_slice_fill_iter(clauses);
@@ -900,7 +861,7 @@ fn build_fn<'a, 't>(
             ret_ty: func
                 .ret_ty
                 .map(|ty| build_ty(ty, tir, resolutions, in_scope_binders))
-                .unwrap_or_else(|| EarlyBinder(&*tir.empty_tir.arena.alloc(Ty::Unit))),
+                .unwrap_or_else(|| EarlyBinder(&*tir.empty_tir.arena.alloc(Term::Unit))),
             body: func.body.map(|expr| {
                 tir.get_body_id(expr.id)
                     .expect("bodyids and tirids should have been pre generated before building tir")
@@ -1008,7 +969,7 @@ fn build_impl<'a, 't>(
             let args = EarlyBinder(GenArgs(tir.empty_tir.arena.alloc_slice_fill_iter(
                 args.0.iter().map(|arg| match arg {
                     ast::GenArg::Ty(ty) => {
-                        GenArg::Ty(build_ty(ty, tir, resolutions, in_scope_binders).skip_binder())
+                        build_ty(ty, tir, resolutions, in_scope_binders).skip_binder()
                     }
                 }),
             )));
