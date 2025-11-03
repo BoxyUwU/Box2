@@ -169,23 +169,25 @@ fn diag_expected_found<'a>(expected: &str, found: Token<'a>, span: Span) -> Diag
         ])
 }
 
-fn parse_expr<'a>(
+fn parse_term<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
     min_bp: u8,
-) -> Result<&'a Expr<'a>, Diagnostic<usize>> {
+) -> Result<&'a Term<'a>, Diagnostic<usize>> {
     let mut lhs = if let Ok(_) = tok.next_if(Token::LParen) {
-        let inner = parse_expr(tok, nodes, 0)?;
+        let inner = parse_term(tok, nodes, 0)?;
         tok.next_if(Token::RParen)
             .map_err(|(found, span)| diag_expected_found(")", found, span))?;
         inner
+    } else if let Ok((_, span)) = tok.next_if(Token::QuestionMark) {
+        nodes.push_term(TermKind::Infer(span))
     } else if let Some((unop, unop_span)) = tok.next_if_disambig_un_op() {
         let (_, r_bp) = unop.bp();
-        let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
-        nodes.push_expr(ExprKind::UnOp(unop, rhs, unop_span.join(rhs.span())))
+        let rhs = parse_term(tok, nodes, r_bp.unwrap())?;
+        nodes.push_term(TermKind::UnOp(unop, rhs, unop_span.join(rhs.span())))
     } else if let Ok(_) = tok.peek_if_ident() {
         let path = parse_path(tok, nodes)?;
-        let path = nodes.push_expr(ExprKind::Path(path));
+        let path = nodes.push_term(TermKind::Path(path));
         path
     } else if let Ok((_, start_span)) = tok.next_if(Token::Kw(Kw::New)) {
         let path = parse_path(tok, nodes)?;
@@ -201,17 +203,18 @@ fn parse_expr<'a>(
                 while let Ok((ident, span)) = tok.next_if_ident() {
                     tok.next_if(Token::Colon)
                         .map_err(|(found, span)| diag_expected_found(":", found, span))?;
-                    let rhs = parse_expr(tok, nodes, 0)?;
+                    let rhs = parse_term(tok, nodes, 0)?;
 
-                    let field = nodes.push_expr_with(|id| {
-                        ExprKind::FieldInit(FieldInit {
+                    let field = nodes.push_term_with(|id| Term {
+                        kind: TermKind::FieldInit(FieldInit {
                             id,
                             ident,
                             span,
                             expr: rhs,
-                        })
+                        }),
+                        id,
                     });
-                    fields.push(unwrap_matches!(&field.kind, ExprKind::FieldInit(init) => init));
+                    fields.push(unwrap_matches!(&field.kind, TermKind::FieldInit(init) => init));
 
                     match tok.next_if(Token::Comma) {
                         Err(_) => break,
@@ -223,7 +226,7 @@ fn parse_expr<'a>(
                     .next_if(Token::RBrace)
                     .map_err(|(found, span)| diag_expected_found("}", found, span))?;
 
-                nodes.push_expr(ExprKind::TypeInit(TypeInit {
+                nodes.push_term(TermKind::TypeInit(TypeInit {
                     path,
                     field_inits: nodes.arena.alloc_slice_fill_iter(fields),
                     span: start_span.join(end_span),
@@ -231,7 +234,7 @@ fn parse_expr<'a>(
             }
         }
     } else if let Ok((lit, span)) = tok.next_if_lit() {
-        nodes.push_expr(ExprKind::Lit(lit, span))
+        nodes.push_term(TermKind::Lit(lit, span))
     } else if let Ok(_) = tok.peek_if(Token::Kw(Kw::Let)) {
         parse_let_expr(tok, nodes)?
     } else {
@@ -261,7 +264,7 @@ fn parse_expr<'a>(
                     break end_span;
                 }
 
-                elements.push(parse_expr(tok, nodes, 0)?);
+                elements.push(parse_term(tok, nodes, 0)?);
 
                 match tok.next_if(Token::Comma) {
                     Ok(_) => continue,
@@ -272,7 +275,7 @@ fn parse_expr<'a>(
                 }
             };
 
-            lhs = nodes.push_expr(ExprKind::FnCall(FnCall {
+            lhs = nodes.push_term(TermKind::FnCall(FnCall {
                 func: lhs,
                 args: nodes.arena.alloc_slice_fill_iter(elements),
                 span: lhs.span().join(end_span),
@@ -280,8 +283,8 @@ fn parse_expr<'a>(
             continue;
         }
 
-        let rhs = parse_expr(tok, nodes, r_bp.unwrap())?;
-        lhs = nodes.push_expr(ExprKind::BinOp(
+        let rhs = parse_term(tok, nodes, r_bp.unwrap())?;
+        lhs = nodes.push_term(TermKind::BinOp(
             op.binop().unwrap(),
             lhs,
             rhs,
@@ -330,7 +333,7 @@ fn parse_opt_gen_args<'a>(
 
     let mut args = vec![];
     while let Err(_) = tok.next_if(Token::RSquare) {
-        args.push(parse_gen_arg(tok, nodes)?);
+        args.push(parse_term(tok, nodes, 0)?);
 
         if tok.next_if(Token::Comma).is_err() && tok.peek_if(Token::RSquare).is_err() {
             let (found, span) = tok
@@ -344,17 +347,10 @@ fn parse_opt_gen_args<'a>(
     Ok(GenArgs(nodes.arena.alloc_slice_fill_iter(args)))
 }
 
-fn parse_gen_arg<'a>(
-    tok: &mut Tokenizer<'a>,
-    nodes: &'a Nodes<'a>,
-) -> Result<GenArg<'a>, Diagnostic<usize>> {
-    parse_ty(tok, nodes).map(|ty| GenArg::Ty(*ty))
-}
-
 fn parse_let_expr<'a>(
     tok: &mut Tokenizer<'a>,
     nodes: &'a Nodes<'a>,
-) -> Result<&'a Expr<'a>, Diagnostic<usize>> {
+) -> Result<&'a Term<'a>, Diagnostic<usize>> {
     let (_, let_start_span) = tok
         .next_if(Token::Kw(Kw::Let))
         .map_err(|(found, span)| diag_expected_found("let", found, span))?;
@@ -363,10 +359,10 @@ fn parse_let_expr<'a>(
         .map_err(|(found, span)| diag_expected_found("IDENTIFIER", found, span))?;
     tok.next_if(Token::Eq)
         .map_err(|(found, span)| diag_expected_found("=", found, span))?;
-    let init = parse_expr(tok, nodes, 0)?;
+    let init = parse_term(tok, nodes, 0)?;
     tok.next_if(Token::Kw(Kw::In))
         .map_err(|(found, span)| diag_expected_found("in", found, span))?;
-    let cont = parse_expr(tok, nodes, 0)?;
+    let cont = parse_term(tok, nodes, 0)?;
 
     let binding = nodes.push_param(|id| Param {
         id,
@@ -374,7 +370,7 @@ fn parse_let_expr<'a>(
         ty: None,
         span: binding_span,
     });
-    Ok(nodes.push_expr(ExprKind::Let {
+    Ok(nodes.push_term(TermKind::Let {
         param: binding,
         init,
         cont,
@@ -456,12 +452,12 @@ pub fn parse_fn<'a>(
     while let Ok((ident, start_span)) = tok.next_if_ident() {
         tok.next_if(Token::Colon)
             .map_err(|(found, span)| diag_expected_found(":", found, span))?;
-        let ty = parse_ty(tok, nodes)?;
+        let ty = parse_term(tok, nodes, 0)?;
         params.push(nodes.push_param(|id| Param {
             id,
             ident,
             ty: Some(ty),
-            span: start_span.join(ty.span),
+            span: start_span.join(ty.span()),
         }));
 
         match tok.next_if(Token::Comma) {
@@ -474,7 +470,7 @@ pub fn parse_fn<'a>(
 
     let mut ret_ty = None;
     if let Ok(_) = tok.next_if(Token::Arrow) {
-        ret_ty = Some(parse_ty(tok, nodes)?);
+        ret_ty = Some(parse_term(tok, nodes, 0)?);
     }
 
     let bounds = match tok.peek_if(Token::Kw(Kw::Where)) {
@@ -484,7 +480,7 @@ pub fn parse_fn<'a>(
 
     let body = match tok.next_if(Token::SemiColon) {
         Ok(_) => None,
-        Err(_) => Some(parse_expr(tok, nodes, 0)?),
+        Err(_) => Some(parse_term(tok, nodes, 0)?),
     };
     Ok(nodes.push_fn(|id| Fn {
         id,
@@ -570,7 +566,7 @@ pub fn parse_type_def<'a>(
                 .with_labels(vec![Label::primary(0, type_span)]))?;
         }
 
-        let ty = parse_ty(tok, nodes)?;
+        let ty = parse_term(tok, nodes, 0)?;
         tok.next_if(Token::SemiColon)
             .map_err(|(found, span)| diag_expected_found(";", found, span))?;
         let (name, name_span) = name.unwrap();
@@ -695,16 +691,15 @@ fn parse_fields<'a>(
                     id,
                 });
 
-                nodes.push_ty(|id| Ty {
+                nodes.push_term_with(|id| Term {
                     id,
-                    kind: TyKind::Path(Path {
+                    kind: TermKind::Path(Path {
                         segments: nodes.arena.alloc_slice_fill_iter([seg]),
                         span: ty_def.name_span,
                     }),
-                    span: ty_def.name_span,
                 })
             }
-            _ => parse_ty(tok, nodes)?,
+            _ => parse_term(tok, nodes, 0)?,
         };
 
         field_defs.push(&*nodes.push_field_def(|id| FieldDef {
@@ -847,20 +842,6 @@ pub fn parse_crate<'a>(
             items: nodes.arena.alloc_slice_fill_iter(items),
         })
         .unwrap_mod())
-}
-
-pub fn parse_ty<'a>(
-    tok: &mut Tokenizer<'a>,
-    nodes: &'a Nodes<'a>,
-) -> Result<&'a Ty<'a>, Diagnostic<usize>> {
-    let (kind, span) = if let Ok((_, span)) = tok.next_if(Token::QuestionMark) {
-        (TyKind::Infer, span)
-    } else {
-        let path = parse_path(tok, nodes)?;
-        (TyKind::Path(path), path.span)
-    };
-
-    Ok(nodes.push_ty(|id| Ty { id, kind, span }))
 }
 
 pub fn parse_trait<'a>(
@@ -1013,20 +994,20 @@ pub fn parse_bounds<'a>(
             None
         };
 
-        let path_or_ty = parse_ty(tok, nodes)?;
+        let path_or_ty = parse_term(tok, nodes, 0)?;
 
         let clause = match tok.next_if(Token::Arrow) {
             Ok(_) => {
-                let ty = parse_ty(tok, nodes)?;
+                let ty = parse_term(tok, nodes, 0)?;
                 nodes.push_clause(|id| Clause {
                     id,
-                    span: Span::join(path_or_ty.span, ty.span),
+                    span: Span::join(path_or_ty.span(), ty.span()),
                     kind: ClauseKind::AliasEq(*path_or_ty, *ty),
                 })
             }
             Err(_) => {
                 let path = match path_or_ty.kind {
-                    TyKind::Path(path) => path,
+                    TermKind::Path(path) => path,
                     _ => unreachable!(),
                 };
                 nodes.push_clause(|id| Clause {
@@ -1075,7 +1056,7 @@ mod test {
         parse_path(&mut Tokenizer::new("Foo::Bar"), &nodes).unwrap();
         parse_path(&mut Tokenizer::new("Foo::Bar::"), &nodes).unwrap_err();
         parse_path(&mut Tokenizer::new("Foo::"), &nodes).unwrap_err();
-        parse_expr(&mut Tokenizer::new("Foo::Bar + 10"), &nodes, 0).unwrap();
+        parse_term(&mut Tokenizer::new("Foo::Bar + 10"), &nodes, 0).unwrap();
     }
 
     #[test]
@@ -1342,25 +1323,25 @@ mod test {
     #[test]
     fn braces() {
         let nodes = Nodes::new();
-        parse_expr(&mut Tokenizer::new("1 * (2 + 3)"), &nodes, 0).unwrap();
-        parse_expr(&mut Tokenizer::new("(1 + 2) * 3"), &nodes, 0).unwrap();
-        parse_expr(&mut Tokenizer::new("((((((3))))))"), &nodes, 0).unwrap();
+        parse_term(&mut Tokenizer::new("1 * (2 + 3)"), &nodes, 0).unwrap();
+        parse_term(&mut Tokenizer::new("(1 + 2) * 3"), &nodes, 0).unwrap();
+        parse_term(&mut Tokenizer::new("((((((3))))))"), &nodes, 0).unwrap();
     }
 
     #[test]
     fn exprs() {
         let nodes = Nodes::new();
-        parse_expr(&mut Tokenizer::new("1 + 2 / 3"), &nodes, 0).unwrap();
-        parse_expr(&mut Tokenizer::new("1 / 2 + 3"), &nodes, 0).unwrap();
-        parse_expr(&mut Tokenizer::new("1 + 2 - 3 + 4"), &nodes, 0).unwrap();
-        parse_expr(&mut Tokenizer::new("3 * foo.bar.baz.blah + 2"), &nodes, 0).unwrap();
+        parse_term(&mut Tokenizer::new("1 + 2 / 3"), &nodes, 0).unwrap();
+        parse_term(&mut Tokenizer::new("1 / 2 + 3"), &nodes, 0).unwrap();
+        parse_term(&mut Tokenizer::new("1 + 2 - 3 + 4"), &nodes, 0).unwrap();
+        parse_term(&mut Tokenizer::new("3 * foo.bar.baz.blah + 2"), &nodes, 0).unwrap();
     }
 
     #[test]
     fn disambig_op() {
         let nodes = Nodes::new();
-        parse_expr(&mut Tokenizer::new("1 - 2"), &nodes, 0).unwrap();
-        parse_expr(&mut Tokenizer::new("1 - -2"), &nodes, 0).unwrap();
-        parse_expr(&mut Tokenizer::new("-1 - -2"), &nodes, 0).unwrap();
+        parse_term(&mut Tokenizer::new("1 - 2"), &nodes, 0).unwrap();
+        parse_term(&mut Tokenizer::new("1 - -2"), &nodes, 0).unwrap();
+        parse_term(&mut Tokenizer::new("-1 - -2"), &nodes, 0).unwrap();
     }
 }

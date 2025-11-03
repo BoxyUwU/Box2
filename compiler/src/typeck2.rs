@@ -6,7 +6,6 @@ use crate::{
     solve::{Goal, GoalKind, NoSolution},
     tir::{
         self,
-        building::InScopeBinders,
         visit::{FallibleTermFolder, TermFoldable, TermFolder, TermSuperFoldable},
         Binder, BodySource, BoundVar, BoundVarKind, Bounds, Clause, DebruijnIndex, FnCall, InferId,
         Term, TirCtx, TirId, Universe, UniverseStorage,
@@ -38,16 +37,15 @@ impl InScopeBinders2 {
     }
 }
 
-pub struct Lowerer<'ast, 'm, 't> {
+pub struct Lowerer<'m, 't> {
     pub resolutions: &'m HashMap<ast::NodeId, Res<ast::NodeId>>,
     pub tir: &'t TirCtx<'t>,
-    pub ast: &'ast ast::Nodes<'ast>,
     pub id_map: HashMap<ast::NodeId, TirId>,
     pub in_scope_binders: InScopeBinders2,
 }
 
-impl<'ast, 'm, 't> Lowerer<'ast, 'm, 't> {
-    pub fn node_to_term(&mut self, node: &'ast ast::Node<'ast>) -> &'t Term<'t> {
+impl<'m, 't> Lowerer<'m, 't> {
+    pub fn node_to_term<'ast>(&mut self, node: &'ast ast::Node<'ast>) -> &'t Term<'t> {
         match node {
             ast::Node::Clause(..)
             | ast::Node::Item(..)
@@ -55,34 +53,15 @@ impl<'ast, 'm, 't> Lowerer<'ast, 'm, 't> {
             | ast::Node::GenericParam(..)
             | ast::Node::PathSeg(..) => unreachable!(),
 
-            ast::Node::Expr(expr) => self.expr_to_term(expr),
-            ast::Node::Ty(ty) => self.ty_to_term(ty),
+            ast::Node::Term(term) => self.term_to_term(term),
         }
     }
 
-    /*
-    fun foo(x: u32) -> u32 {
-        let a = x in
-        let b = y in
-        let c = z in
-        let d =
-            cases
-            1 => (
-
-            ),
-            2 => (
-
-            ),
-            in
-        let f = (
-        )
-    }
-    */
-    pub fn expr_to_term(&mut self, expr: &'ast ast::Expr<'ast>) -> &'t Term<'t> {
+    pub fn term_to_term<'ast>(&mut self, term: &'ast ast::Term<'ast>) -> &'t Term<'t> {
         let tir = self.tir;
 
-        match expr.kind {
-            ast::ExprKind::Let {
+        match term.kind {
+            ast::TermKind::Let {
                 param,
                 init,
                 cont,
@@ -90,16 +69,16 @@ impl<'ast, 'm, 't> Lowerer<'ast, 'm, 't> {
             } => {
                 let var_ty = param
                     .ty
-                    .map(|ty| self.ty_to_term(ty))
+                    .map(|ty| self.term_to_term(ty))
                     .unwrap_or_else(|| self.infer_term());
 
-                let init = self.expr_to_term(init);
+                let init = self.term_to_term(init);
 
                 self.in_scope_binders
                     .binders
                     .push(HashMap::from([(param.id, BoundVar(0))]));
 
-                let cont = self.expr_to_term(cont);
+                let cont = self.term_to_term(cont);
 
                 self.in_scope_binders.binders.pop().unwrap();
 
@@ -113,8 +92,8 @@ impl<'ast, 'm, 't> Lowerer<'ast, 'm, 't> {
                     _in: Binder::bind_with_vars(cont, vars),
                 })
             }
-            ast::ExprKind::Path(path) => {
-                let res = self.resolutions.get(&expr.id).unwrap();
+            ast::TermKind::Path(path) => {
+                let res = self.resolutions.get(&term.id).unwrap();
 
                 match res {
                     Res::Local(id) => {
@@ -122,16 +101,14 @@ impl<'ast, 'm, 't> Lowerer<'ast, 'm, 't> {
                         self.tir.arena.alloc(Term::Bound(dbj, bv))
                     }
                     Res::Def(DefKind::Func, id) => {
-                        let ty_args =
-                            path.segments
-                                .last()
-                                .unwrap()
-                                .args
-                                .0
-                                .iter()
-                                .map(|arg| match arg {
-                                    ast::GenArg::Ty(ty) => self.ty_to_term(ty),
-                                });
+                        let ty_args = path
+                            .segments
+                            .last()
+                            .unwrap()
+                            .args
+                            .0
+                            .iter()
+                            .map(|term| self.term_to_term(term));
                         let ty_args = tir.arena.alloc_slice_fill_iter(ty_args);
 
                         let id = self.id_map[id];
@@ -140,33 +117,30 @@ impl<'ast, 'm, 't> Lowerer<'ast, 'm, 't> {
                     _ => todo!(),
                 }
             }
-            ast::ExprKind::FnCall(fn_call) => {
+            ast::TermKind::FnCall(fn_call) => {
                 let args = self
                     .tir
                     .arena
-                    .alloc_slice_fill_iter(fn_call.args.iter().map(|expr| self.expr_to_term(expr)));
+                    .alloc_slice_fill_iter(fn_call.args.iter().map(|expr| self.term_to_term(expr)));
 
                 self.tir.arena.alloc(Term::FnCall(FnCall {
-                    func: self.expr_to_term(fn_call.func),
+                    func: self.term_to_term(fn_call.func),
                     args,
                 }))
             }
-            ast::ExprKind::TypeInit(type_init) => {
-                let res = self.resolutions.get(&expr.id).unwrap();
+            ast::TermKind::TypeInit(type_init) => {
+                let res = self.resolutions.get(&term.id).unwrap();
                 match res {
                     Res::Def(DefKind::Adt, adt_id) => {
-                        let ty_args =
-                            type_init
-                                .path
-                                .segments
-                                .last()
-                                .unwrap()
-                                .args
-                                .0
-                                .iter()
-                                .map(|arg| match arg {
-                                    ast::GenArg::Ty(ty) => self.ty_to_term(ty),
-                                });
+                        let ty_args = type_init
+                            .path
+                            .segments
+                            .last()
+                            .unwrap()
+                            .args
+                            .0
+                            .iter()
+                            .map(|term| self.term_to_term(term));
                         let ty_args = tir.arena.alloc_slice_fill_iter(ty_args);
                         let adt_id = self.id_map[adt_id];
                         tir.arena.alloc(Term::Adt(adt_id, tir::GenArgs(ty_args)))
@@ -182,9 +156,7 @@ impl<'ast, 'm, 't> Lowerer<'ast, 'm, 't> {
                             .args
                             .0
                             .iter()
-                            .map(|arg| match arg {
-                                ast::GenArg::Ty(ty) => self.ty_to_term(ty),
-                            });
+                            .map(|term| self.term_to_term(term));
                         let ty_args = tir.arena.alloc_slice_fill_iter(ty_args);
                         let variant_id = self.id_map[variant_id];
                         self.tir
@@ -194,17 +166,11 @@ impl<'ast, 'm, 't> Lowerer<'ast, 'm, 't> {
                     _ => unreachable!(),
                 }
             }
-            ast::ExprKind::BinOp(bin_op, expr, expr1, span) => todo!(),
-            ast::ExprKind::UnOp(un_op, expr, span) => todo!(),
-            ast::ExprKind::Lit(literal, span) => todo!(),
-            ast::ExprKind::FieldInit(field_init) => todo!(),
-        }
-    }
-
-    fn ty_to_term(&mut self, ty: &'ast ast::Ty<'ast>) -> &'t Term<'t> {
-        match ty.kind {
-            ast::TyKind::Path(path) => todo!(),
-            ast::TyKind::Infer => self.infer_term(),
+            ast::TermKind::BinOp(bin_op, expr, expr1, span) => todo!(),
+            ast::TermKind::UnOp(un_op, expr, span) => todo!(),
+            ast::TermKind::Lit(literal, span) => todo!(),
+            ast::TermKind::FieldInit(field_init) => todo!(),
+            ast::TermKind::Infer(_) => self.infer_term(),
         }
     }
 

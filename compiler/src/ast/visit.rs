@@ -3,7 +3,7 @@ use super::*;
 pub trait Visitor<'ast>: Sized {
     #![allow(unused_variables)]
 
-    fn visit_expr(&mut self, expr: &'ast Expr<'ast>) {}
+    fn visit_term(&mut self, term: &'ast Term<'ast>) {}
 
     fn visit_mod(&mut self, module: &'ast Module<'ast>) {
         super_visit_mod(self, module)
@@ -82,8 +82,8 @@ pub fn super_visit_type_alias<'ast, V: Visitor<'ast>>(v: &mut V, alias: &'ast Ty
 
 pub fn super_visit_fn<'ast, V: Visitor<'ast>>(v: &mut V, func: &'ast Fn<'ast>) {
     v.visit_bounds(&func.bounds);
-    if let Some(expr) = func.body {
-        v.visit_expr(expr);
+    if let Some(term) = func.body {
+        v.visit_term(term);
     }
 }
 

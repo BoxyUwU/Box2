@@ -52,9 +52,11 @@ fn main() {
         }
     };
 
-    let crate_scopegraph = resolve::build_graph_for_crate(root_mod);
+    let (crate_scopegraph, name_res_queries) = resolve::build_graph_for_crate(root_mod);
     let mut resolver = resolve::Resolver::new(&crate_scopegraph);
-    resolver.resolve_mod(root_mod);
+    for q in name_res_queries {
+        resolver.resolve_name_res_query(q);
+    }
     let (resolution_errors, resolutions) = resolver.into_outputs();
 
     for error in resolution_errors {
@@ -88,7 +90,7 @@ fn main() {
                 on_res: _,
                 cause_expr,
             } => {
-                let span = nodes.get(cause_expr).unwrap_expr().span();
+                let span = nodes.get(cause_expr).unwrap_term().span();
 
                 let diag = Diagnostic::error()
                     .with_message(format!("failed to resolve `{ident}`"))
@@ -105,13 +107,12 @@ fn main() {
     let mut lowerer = typeck2::Lowerer {
         resolutions: &resolutions,
         tir: tir_ctx,
-        ast: &nodes,
         id_map: lowered_ids,
         in_scope_binders: typeck2::InScopeBinders2 { binders: vec![] },
     };
 
     #[allow(non_local_definitions)]
-    impl<'ast> Visitor<'ast> for typeck2::Lowerer<'ast, '_, '_> {
+    impl<'ast> Visitor<'ast> for typeck2::Lowerer<'_, '_> {
         fn visit_fn(&mut self, func: &'ast ast::Fn<'ast>) {
             let term = self.expr_to_term(func.body.unwrap());
             dbg!(term);

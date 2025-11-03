@@ -39,18 +39,13 @@ impl<'a> Nodes<'a> {
         node
     }
 
-    pub fn push_ty(&'a self, f: impl FnOnce(NodeId) -> Ty<'a>) -> &Ty {
-        self.push_node(|id| Node::Ty(f(id))).unwrap_ty()
+    pub fn push_term_with(&'a self, f: impl FnOnce(NodeId) -> Term<'a>) -> &'a Term<'a> {
+        self.push_node(|id| Node::Term(f(id))).unwrap_term()
     }
 
-    pub fn push_expr_with(&'a self, f: impl FnOnce(NodeId) -> ExprKind<'a>) -> &Expr {
-        self.push_node(|id| Node::Expr(Expr { id, kind: f(id) }))
-            .unwrap_expr()
-    }
-
-    pub fn push_expr(&'a self, kind: ExprKind<'a>) -> &Expr {
-        self.push_node(|id| Node::Expr(Expr { id, kind }))
-            .unwrap_expr()
+    pub fn push_term(&'a self, kind: TermKind<'a>) -> &'a Term<'a> {
+        self.push_node(|id| Node::Term(Term { kind, id }))
+            .unwrap_term()
     }
 
     pub fn push_fn(&'a self, f: impl FnOnce(NodeId) -> Fn<'a>) -> &Item {
@@ -130,9 +125,8 @@ pub struct NodeId(pub usize);
 #[derive(Copy, Clone, Debug)]
 pub enum Node<'a> {
     Clause(Clause<'a>),
-    Expr(Expr<'a>),
     Item(Item<'a>),
-    Ty(Ty<'a>),
+    Term(Term<'a>),
     Param(Param<'a>),
     GenericParam(GenericParam<'a>),
     PathSeg(PathSeg<'a>),
@@ -147,8 +141,8 @@ impl<'a> Node<'a> {
         unwrap_matches!(self, Node::Item(item) => item)
     }
 
-    pub fn unwrap_expr(&self) -> &Expr<'a> {
-        unwrap_matches!(self, Node::Expr(expr) => expr)
+    pub fn unwrap_term(&self) -> &Term<'a> {
+        unwrap_matches!(self, Node::Term(term) => term)
     }
 
     #[allow(unused)]
@@ -189,10 +183,6 @@ impl<'a> Node<'a> {
         unwrap_matches!(self, Node::Item(Item::TypeAlias(alias)) => alias)
     }
 
-    pub fn unwrap_ty(&self) -> &Ty {
-        unwrap_matches!(self, Node::Ty(expr) => expr)
-    }
-
     pub fn unwrap_use(&self) -> &Use {
         unwrap_matches!(self, Node::Item(Item::Use(u)) => u)
     }
@@ -210,7 +200,7 @@ impl<'a> Node<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Visibility {
     Priv,
     Pub,
@@ -223,25 +213,7 @@ pub struct Binder<'a, T> {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub struct Ty<'a> {
-    pub id: NodeId,
-    pub kind: TyKind<'a>,
-    pub span: Span,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum TyKind<'a> {
-    Path(Path<'a>),
-    Infer,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum GenArg<'a> {
-    Ty(Ty<'a>),
-}
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub struct GenArgs<'a>(pub &'a [GenArg<'a>]);
+pub struct GenArgs<'a>(pub &'a [&'a Term<'a>]);
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct PathSeg<'a> {
@@ -369,7 +341,7 @@ pub enum GenericParamKind {
     Type,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TypeAlias<'a> {
     pub id: NodeId,
     pub visibility: Visibility,
@@ -377,10 +349,10 @@ pub struct TypeAlias<'a> {
     pub name_span: Span,
     pub generics: Generics<'a>,
     pub bounds: Bounds<'a>,
-    pub ty: Option<&'a Ty<'a>>,
+    pub ty: Option<&'a Term<'a>>,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TypeDef<'a> {
     pub id: NodeId,
     pub visibility: Visibility,
@@ -402,7 +374,7 @@ impl TypeDef<'_> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct VariantDef<'a> {
     pub id: NodeId,
     pub visibility: Visibility,
@@ -411,35 +383,35 @@ pub struct VariantDef<'a> {
     pub type_defs: &'a [&'a TypeDef<'a>],
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FieldDef<'a> {
     pub id: NodeId,
     pub visibility: Visibility,
     pub name: &'a str,
-    pub ty: &'a Ty<'a>,
+    pub ty: &'a Term<'a>,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Param<'a> {
     pub id: NodeId,
     pub ident: &'a str,
-    pub ty: Option<&'a Ty<'a>>,
+    pub ty: Option<&'a Term<'a>>,
     pub span: Span,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Fn<'a> {
     pub id: NodeId,
     pub visibility: Visibility,
     pub name: &'a str,
     pub params: &'a [&'a Param<'a>],
-    pub ret_ty: Option<&'a Ty<'a>>,
+    pub ret_ty: Option<&'a Term<'a>>,
     pub generics: Generics<'a>,
     pub bounds: Bounds<'a>,
-    pub body: Option<&'a Expr<'a>>,
+    pub body: Option<&'a Term<'a>>,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Use<'a> {
     pub id: NodeId,
     pub visibility: Visibility,
@@ -447,7 +419,7 @@ pub struct Use<'a> {
     pub name: &'a str,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Trait<'a> {
     pub id: NodeId,
     pub span: Span,
@@ -459,13 +431,13 @@ pub struct Trait<'a> {
     pub assoc_items: &'a [AssocItem<'a>],
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum AssocItem<'a> {
     Fn(&'a Fn<'a>),
     Type(&'a TypeAlias<'a>),
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Impl<'a> {
     pub id: NodeId,
     pub span: Span,
@@ -478,79 +450,81 @@ pub struct Impl<'a> {
     pub assoc_items: &'a [AssocItem<'a>],
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Bounds<'a> {
     pub clauses: &'a [Clause<'a>],
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Clause<'a> {
     pub id: NodeId,
     pub span: Span,
     pub kind: ClauseKind<'a>,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ClauseKind<'a> {
     Bound(Binder<'a, &'a Clause<'a>>),
-    AliasEq(Ty<'a>, Ty<'a>),
+    AliasEq(Term<'a>, Term<'a>),
     Trait(Path<'a>),
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Expr<'a> {
-    pub id: NodeId,
-    pub kind: ExprKind<'a>,
-}
-
-impl<'a> Expr<'a> {
+impl<'a> Term<'a> {
     pub fn span(&self) -> Span {
         match &self.kind {
-            ExprKind::Let { sp: span, .. }
-            | ExprKind::BinOp(_, _, _, span)
-            | ExprKind::UnOp(_, _, span)
-            | ExprKind::Lit(_, span) => *span,
-            ExprKind::Path(path) => path.span,
-            ExprKind::FnCall(call) => call.span,
-            ExprKind::TypeInit(ty_init) => ty_init.span,
-            ExprKind::FieldInit(field_init) => field_init.span,
+            TermKind::Let { sp: span, .. }
+            | TermKind::BinOp(_, _, _, span)
+            | TermKind::UnOp(_, _, span)
+            | TermKind::Infer(span)
+            | TermKind::Lit(_, span) => *span,
+            TermKind::Path(path) => path.span,
+            TermKind::FnCall(call) => call.span,
+            TermKind::TypeInit(ty_init) => ty_init.span,
+            TermKind::FieldInit(field_init) => field_init.span,
         }
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum ExprKind<'a> {
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Term<'a> {
+    pub id: NodeId,
+    pub kind: TermKind<'a>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum TermKind<'a> {
     Let {
         param: &'a Param<'a>,
-        init: &'a Expr<'a>,
-        cont: &'a Expr<'a>,
+        init: &'a Term<'a>,
+        cont: &'a Term<'a>,
         sp: Span,
     },
-    BinOp(BinOp, &'a Expr<'a>, &'a Expr<'a>, Span),
-    UnOp(UnOp, &'a Expr<'a>, Span),
+    BinOp(BinOp, &'a Term<'a>, &'a Term<'a>, Span),
+    UnOp(UnOp, &'a Term<'a>, Span),
     Lit(Literal, Span),
     Path(Path<'a>),
     FnCall(FnCall<'a>),
     TypeInit(TypeInit<'a>),
     FieldInit(FieldInit<'a>),
+    Infer(Span),
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FnCall<'a> {
-    pub func: &'a Expr<'a>,
-    pub args: &'a [&'a Expr<'a>],
+    pub func: &'a Term<'a>,
+    pub args: &'a [&'a Term<'a>],
     pub span: Span,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct FieldInit<'a> {
     pub id: NodeId,
     pub ident: &'a str,
     pub span: Span,
-    pub expr: &'a Expr<'a>,
+    pub expr: &'a Term<'a>,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct TypeInit<'a> {
     pub path: Path<'a>,
     pub field_inits: &'a [&'a FieldInit<'a>],

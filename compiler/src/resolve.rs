@@ -1,9 +1,8 @@
-use std::{cell::RefCell, collections::HashMap, iter, vec};
+use std::{cell::RefCell, collections::HashMap, vec};
 
 use crate::{
     ast::{
-        self, visit::Visitor, Expr, ExprKind, Impl, Item, Module, Node, NodeId, Nodes, Trait, Ty,
-        TypeAlias, TypeDef,
+        self, Impl, Item, Module, Node, NodeId, Nodes, Term, TermKind, Trait, TypeAlias, TypeDef,
     },
     scopegraph::*,
 };
@@ -44,12 +43,12 @@ impl Res<NodeId> {
                 id,
             ),
             Node::Param(_) => Res::Local(id),
-            Node::Expr(Expr {
+            Node::Term(Term {
                 id: _,
-                kind: ExprKind::Let { .. },
+                kind: TermKind::Let { .. },
             }) => Res::Local(id),
             Node::GenericParam(param) => Res::Def(DefKind::GenericParam, param.id),
-            Node::Clause(_) | Node::PathSeg(_) | Node::Expr(_) | Node::Ty(_) => unreachable!(),
+            Node::Clause(_) | Node::PathSeg(_) | Node::Term(_) => unreachable!(),
         }
     }
 }
@@ -66,7 +65,7 @@ impl<Id> Res<Id> {
 pub enum ResolutionError {
     UnresolvedLexicalIdentifier {
         ident: String,
-        in_scope: (NodeId, SGNodeId),
+        in_scope: GlobalSGodeId,
         cause_expr: NodeId,
     },
     UnresolvedAssociatedIdentifier {
@@ -82,19 +81,76 @@ pub enum ResolutionError {
 }
 
 #[derive(Copy, Clone)]
-pub struct DeferredRes<'ast> {
-    start: NodeId,
-    path: &'ast ast::Path<'ast>,
+pub enum NameResQuery<'ast> {
+    Path(PathResQuery<'ast>),
+    Field(FieldInitResQuery<'ast>),
+}
+
+#[derive(Copy, Clone)]
+pub struct PathResQuery<'ast> {
+    path_id: NodeId,
+    path: ast::Path<'ast>,
+    in_sg: GlobalSGodeId,
+}
+
+#[derive(Copy, Clone)]
+pub struct FieldInitResQuery<'ast> {
+    path_id: NodeId,
+    path: ast::Path<'ast>,
+
+    field_ident_id: NodeId,
+    field_ident: &'ast str,
+
+    in_sig: GlobalSGodeId,
+}
+
+pub trait SomeResolver<D> {
+    type Deferred;
+    fn record_res(&mut self, id: NodeId, res: Result<Res<NodeId>, ()>) -> Result<Res<NodeId>, ()>;
+    fn error(&self, e: ResolutionError) -> Result<Res<NodeId>, ()>;
+    fn query(&mut self, query: SGQuery) -> Result<HashMap<usize, Vec<Res<NodeId>>>, ()>;
+}
+
+impl<'ast, 'sg> SomeResolver<PathResQuery<'ast>> for Resolver<'ast, 'sg> {
+    type Deferred = PathResQuery<'ast>;
+
+    fn record_res(&mut self, id: NodeId, res: Result<Res<NodeId>, ()>) -> Result<Res<NodeId>, ()> {
+        let new_res = match res {
+            Err(()) => Res::Err,
+            Ok(res) => res,
+        };
+
+        if let Some(old_res) = self.resolutions.insert(id, new_res) {
+            assert_eq!(
+                old_res, new_res,
+                "differing resolutions recorded for `{id:?}`: {old_res:?} and {new_res:?}"
+            );
+        }
+
+        res
+    }
+
+    fn error(&self, e: ResolutionError) -> Result<Res<NodeId>, ()> {
+        self.errors.borrow_mut().push(e);
+
+        Err(())
+    }
+
+    fn query(&mut self, query: SGQuery) -> Result<HashMap<usize, Vec<Res<NodeId>>>, ()> {
+        ScopeGraph::query(&self.scopegraphs, query, |resolver, d| {
+            resolve_path_res(resolver, d).unwrap_or(Res::Err)
+        })
+    }
 }
 
 pub struct Resolver<'ast, 'sg> {
     errors: RefCell<Vec<ResolutionError>>,
     resolutions: HashMap<NodeId, Res<NodeId>>,
-    scopegraphs: &'sg HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>>,
+    scopegraphs: &'sg HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>,
 }
 
 impl<'ast, 'sg> Resolver<'ast, 'sg> {
-    pub fn new(scopegraphs: &'sg HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>>) -> Self {
+    pub fn new(scopegraphs: &'sg HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>) -> Self {
         Self {
             errors: RefCell::default(),
             resolutions: HashMap::new(),
@@ -106,394 +162,65 @@ impl<'ast, 'sg> Resolver<'ast, 'sg> {
         (self.errors.into_inner(), self.resolutions)
     }
 
-    pub fn resolve_item(&mut self, item: &'ast Item<'ast>) {
-        match item {
-            Item::Mod(m) => self.resolve_mod(m),
-            Item::TypeDef(t) => self.resolve_ty_def(t),
-            Item::VariantDef(_) | Item::FieldDef(_) => unreachable!(),
-            Item::TypeAlias(t) => self.resolve_ty_alias(t),
-            Item::Fn(f) => self.resolve_fn(f),
-            Item::Use(u) => self.resolve_use(u),
-            Item::Trait(trait_) => self.resolve_trait(trait_),
-            Item::Impl(impl_) => self.resolve_impl(impl_),
-        };
-    }
-
-    pub fn resolve_mod(&mut self, module: &'ast Module<'ast>) {
-        let ast::Module {
-            id: _,
-            visibility: _,
-            name: _,
-            items,
-        } = module;
-
-        for item in *items {
-            self.resolve_item(item);
-        }
-    }
-
-    pub fn resolve_use(&mut self, u: &ast::Use<'_>) {
-        let ast::Use {
-            id: _,
-            visibility: _,
-            path,
-            name: _,
-        } = u;
-
-        let res = resolve_path(self, path, (u.id, SGNodeId::ROOT));
-        let _ = self.record_res(u.id, res);
-    }
-
-    pub fn resolve_impl(&mut self, impl_def: &'ast ast::Impl<'ast>) {
-        let ast::Impl {
-            id: _,
-            span: _,
-            of_trait,
-            generics: _,
-            bounds: _,
-            assoc_items,
-        } = impl_def;
-
-        let res = resolve_path(self, of_trait, (impl_def.id, SGNodeId::ROOT));
-        let _ = self.record_res(impl_def.id, res);
-
-        for assoc in *assoc_items {
-            match assoc {
-                ast::AssocItem::Fn(func) => self.resolve_fn(func),
-                ast::AssocItem::Type(ty) => self.resolve_ty_alias(ty),
-            };
-        }
-    }
-
-    pub fn resolve_trait(&mut self, trait_def: &'ast ast::Trait<'ast>) {
-        let ast::Trait {
-            id: _,
-            span: _,
-            visibility: _,
-            ident: _,
-            generics: _,
-            bounds,
-            assoc_items,
-        } = trait_def;
-
-        self.resolve_bounds(bounds, trait_def.id);
-        for assoc in *assoc_items {
-            match assoc {
-                ast::AssocItem::Fn(func) => self.resolve_fn(func),
-                ast::AssocItem::Type(ty) => self.resolve_ty_alias(ty),
-            };
-        }
-    }
-
-    pub fn resolve_ty_alias(&mut self, alias: &ast::TypeAlias<'_>) {
-        let ast::TypeAlias {
-            id: _,
-            visibility: _,
-            name: _,
-            name_span: _,
-            generics: _,
-            bounds,
-            ty,
-        } = alias;
-
-        self.resolve_bounds(bounds, alias.id);
-        if let Some(ty) = ty {
-            let _ = resolve_ty(self, ty, (alias.id, SGNodeId::ROOT));
-        }
-    }
-
-    pub fn resolve_fn(&mut self, func: &'ast ast::Fn<'ast>) {
-        let ast::Fn {
-            id: _,
-            visibility: _,
-            name: _,
-            params,
-            ret_ty,
-            generics: _,
-            bounds,
-            body,
-        } = func;
-
-        self.resolve_bounds(bounds, func.id);
-        for ty in params
-            .iter()
-            .map(|param| param.ty)
-            .chain([*ret_ty])
-            .flatten()
-        {
-            // fine to continue on
-            let _ = resolve_ty(self, ty, (func.id, SGNodeId::ROOT));
-        }
-
-        struct ExprResolver<'a, 'ast, 'sg> {
-            resolver: &'a mut Resolver<'ast, 'sg>,
-            scope_swap: iter::Peekable<vec::IntoIter<(NodeId, SGNodeId)>>,
-            start_from: (NodeId, SGNodeId),
-        }
-
-        impl<'a, 'ast, 'sg> ExprResolver<'a, 'ast, 'sg> {
-            pub fn new(resolver: &'a mut Resolver<'ast, 'sg>, scopegraph_id: NodeId) -> Self {
-                let mut source_to_sg_nodes = resolver.scopegraphs[&scopegraph_id]
-                    .source_to_sg_node()
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .peekable();
-
-                Self {
-                    resolver,
-                    start_from: source_to_sg_nodes.next().unwrap(),
-                    scope_swap: source_to_sg_nodes,
-                }
-            }
-        }
-
-        impl<'a, 'ast, 'sg> Visitor<'ast> for ExprResolver<'a, 'ast, 'sg> {
-            fn visit_expr(&mut self, expr: &'ast Expr<'ast>) {
-                match expr.kind {
-                    ExprKind::Let {
-                        param: _,
-                        init,
-                        cont,
-                        sp: _,
-                    } => {
-                        self.visit_expr(init);
-                        self.visit_expr(cont);
-                    }
-                    ExprKind::BinOp(binop, lhs, rhs, _) => {
-                        self.visit_expr(lhs);
-                        match binop {
-                            ast::BinOp::Add
-                            | ast::BinOp::Sub
-                            | ast::BinOp::Mul
-                            | ast::BinOp::Div
-                            | ast::BinOp::Mutate => self.visit_expr(rhs),
-                            ast::BinOp::Dot => (),
-                        };
-                    }
-                    ExprKind::UnOp(_, expr, _) => self.visit_expr(expr),
-                    ExprKind::Path(path) => {
-                        // Dont care
-                        let res = resolve_path(self.resolver, &path, self.start_from);
-                        let _ = self.resolver.record_res(expr.id, res);
-                    }
-                    ExprKind::FnCall(ast::FnCall {
-                        func,
-                        args,
-                        span: _,
-                    }) => {
-                        self.visit_expr(func);
-                        for expr in args {
-                            self.visit_expr(expr);
-                        }
-                    }
-                    ExprKind::TypeInit(ast::TypeInit {
-                        path,
-                        field_inits,
-                        span: _,
-                    }) => {
-                        let resolved_ty = resolve_path(self.resolver, &path, self.start_from);
-                        let _ = self.resolver.record_res(expr.id, resolved_ty);
-                        for ast::FieldInit {
-                            id: field_id,
-                            ident,
-                            span: _,
-                            expr,
-                        } in field_inits
-                        {
-                            if let Ok(Res::Def(_, ty_id) | Res::Local(ty_id)) = resolved_ty {
-                                let field_res = self
-                                    .resolver
-                                    .resolve_ident_as_field(ident, ty_id, *field_id);
-                                let _ = self.resolver.record_res(*field_id, field_res);
-                            }
-
-                            self.visit_expr(expr);
-                        }
-                    }
-                    ExprKind::FieldInit(_) => unreachable!("should have been handled above "),
-
-                    // Nothing to resolve
-                    ExprKind::Lit(_, _) => (),
-                }
-
-                match self.scope_swap.peek() {
-                    Some((id, _)) if *id == expr.id => {
-                        self.start_from.1 = self.scope_swap.next().unwrap().1;
-                    }
-                    _ => (),
-                }
-            }
-
-            fn visit_mod(&mut self, _module: &Module<'_>) {}
-            fn visit_type_def(&mut self, _def: &TypeDef<'_>) {}
-            fn visit_variant_def(&mut self, _def: &ast::VariantDef<'_>) {}
-            fn visit_field_def(&mut self, _def: &ast::FieldDef<'_>) {}
-            fn visit_type_alias(&mut self, _alias: &TypeAlias<'_>) {}
-            fn visit_fn(&mut self, _func: &ast::Fn<'_>) {}
-            fn visit_use(&mut self, _u: &ast::Use<'_>) {}
-            fn visit_trait(&mut self, _trait_: &Trait<'_>) {}
-            fn visit_impl(&mut self, _impl_: &Impl<'_>) {}
-            fn visit_bounds(&mut self, _bounds: &ast::Bounds<'_>) {}
-        }
-
-        if let Some(expr) = body {
-            ExprResolver::new(self, func.id).visit_expr(expr);
-        }
-    }
-
-    pub fn resolve_ty_def(&mut self, adt: &TypeDef<'_>) {
-        let TypeDef {
-            id: _,
-            visibility: _,
-            name: _,
-            name_span: _,
-            generics: _,
-            bounds,
-            variants,
-        } = adt;
-
-        self.resolve_bounds(bounds, adt.id);
-        for variant in *variants {
-            let ast::VariantDef {
-                id: _,
-                visibility: _,
-                name: _,
-                field_defs,
-                type_defs,
-            } = variant;
-
-            for ty_def in *type_defs {
-                self.resolve_ty_def(ty_def);
-            }
-
-            for field in *field_defs {
-                let ast::FieldDef {
-                    id: _,
-                    visibility: _,
-                    name: _,
-                    ty,
-                } = field;
-
-                let id = if adt.is_struct() { adt.id } else { variant.id };
-
-                // Resolving fields is not dependent on other fields having resolved. No harm
-                // in continueing
-                let _ = resolve_ty(self, ty, (id, SGNodeId::ROOT));
-            }
-        }
-    }
-
-    fn sg_node_id_for_bound_clause(&self, bound_clause: NodeId, on_item: NodeId) -> SGNodeId {
-        self.scopegraphs[&on_item].bound_clause_to_sg_node(bound_clause)
-    }
-
-    fn resolve_bounds(&mut self, bounds: &ast::Bounds<'_>, on_item: NodeId) {
-        for clause in bounds.clauses {
-            self.resolve_clause(clause, (on_item, SGNodeId::ROOT));
-        }
-    }
-
-    fn resolve_clause(&mut self, clause: &ast::Clause<'_>, start_from: (NodeId, SGNodeId)) {
-        match &clause.kind {
-            ast::ClauseKind::Bound(binder) => {
-                let sg_node_id = self.sg_node_id_for_bound_clause(clause.id, start_from.0);
-                self.resolve_clause(binder.value, (start_from.0, sg_node_id));
-            }
-            ast::ClauseKind::AliasEq(lhs, rhs) => {
-                let _ = resolve_ty(self, lhs, start_from);
-                let _ = resolve_ty(self, rhs, start_from);
-            }
-            ast::ClauseKind::Trait(trait_path) => {
-                let res = resolve_path(self, trait_path, start_from);
-                let _ = self.record_res(clause.id, res);
-            }
-        }
-    }
-
-    fn resolve_ident_as_field(
-        &mut self,
-        ident: &str,
-        start_from: NodeId,
-        cause_expr: NodeId,
-    ) -> Result<Res<NodeId>, ()> {
-        let query_result = self.query(NameResQuery {
-            name: ident.to_owned(),
-            start: (start_from, SGNodeId::ROOT),
-            edge_filter: vec![EdgeKind::Field],
-        });
-
-        match query_result {
-            Ok(candidates) => {
-                let mut cand_iter = candidates
-                    .values()
-                    .flat_map(|resolutions| resolutions.into_iter());
-                let cand = cand_iter.next().unwrap();
-                match cand_iter.next() {
-                    None => Ok(*cand),
-                    Some(_) => {
-                        return self.error(ResolutionError::UnresolvedField {
-                            ident: ident.to_owned(),
-                            on_res: start_from,
-                            cause_expr,
-                        })
-                    }
-                }
-            }
-            Err(()) => {
-                return self.error(ResolutionError::UnresolvedField {
-                    ident: ident.to_owned(),
-                    on_res: start_from,
-                    cause_expr,
-                })
-            }
-        }
-    }
-
     fn error(&self, e: ResolutionError) -> Result<Res<NodeId>, ()> {
         self.errors.borrow_mut().push(e);
 
         Err(())
     }
+
+    pub fn resolve_name_res_query(&mut self, q: NameResQuery<'ast>) -> Result<(), ()> {
+        match q {
+            NameResQuery::Path(path_res_query) => resolve_path_res(self, path_res_query).map(drop),
+            NameResQuery::Field(field_init_res_query) => {
+                resolve_field_res(self, field_init_res_query).map(drop)
+            }
+        }
+    }
 }
 
-fn resolve_ty<'ast, R: SomeResolver>(
+fn resolve_field_res<'ast, R: SomeResolver<PathResQuery<'ast>>>(
     resolver: &mut R,
-    ty: &Ty<'_>,
-    start_from: (NodeId, SGNodeId),
-) -> Result<(), ()> {
-    match &ty.kind {
-        ast::TyKind::Path(path) => {
-            let res = resolve_path(resolver, path, start_from);
-            resolver.record_res(ty.id, res)?;
-        }
-        ast::TyKind::Infer => (),
+    field_res_query: FieldInitResQuery<'ast>,
+) -> Result<Res<NodeId>, ()> {
+    let res = resolve_path_res(
+        resolver,
+        PathResQuery {
+            path_id: field_res_query.path_id,
+            path: field_res_query.path,
+            in_sg: field_res_query.in_sig,
+        },
+    )?;
+
+    let id = match res {
+        Res::Def(DefKind::Adt | DefKind::Variant, id) => id,
+        Res::Def(_, _) | Res::Local(_) | Res::Err => return Err(()),
     };
 
-    Ok(())
+    let ident_res = resolve_ident_as_field(
+        resolver,
+        field_res_query.field_ident,
+        GlobalSGodeId(id, SGNodeId::ROOT),
+        field_res_query.field_ident_id,
+    );
+    resolver.record_res(field_res_query.field_ident_id, ident_res)
 }
 
-fn resolve_deferred_res<'sg, 'ast>(
-    resolver: &mut NameResQueryEvaluator<'sg, DeferredRes<'ast>>,
-    deferred: DeferredRes<'ast>,
-) -> Res<NodeId> {
-    resolve_path(resolver, deferred.path, (deferred.start, SGNodeId::ROOT)).unwrap_or(Res::Err)
-}
-
-fn resolve_path<'ast, R: SomeResolver>(
+fn resolve_path_res<'ast, R: SomeResolver<PathResQuery<'ast>>>(
     resolver: &mut R,
-    path: &ast::Path<'_>,
-    start_from: (NodeId, SGNodeId),
+    path_res_query: PathResQuery<'ast>,
 ) -> Result<Res<NodeId>, ()> {
+    let PathResQuery {
+        path_id,
+        path,
+        in_sg,
+    } = path_res_query;
+
     let mut seg_iter = path.segments.iter();
 
     let result = (|| -> Result<Res<NodeId>, ()> {
         let first_seg = seg_iter.next().unwrap();
-        let prev_seg_res =
-            resolve_ident_lexically(resolver, first_seg.ident, start_from, first_seg.id);
+        let prev_seg_res = resolve_ident_lexically(resolver, first_seg.ident, in_sg, first_seg.id);
         let mut prev_seg_res = resolver.record_res(first_seg.id, prev_seg_res)?;
-        resolve_gen_args(resolver, &first_seg.args, start_from);
 
         for cur_seg in &mut seg_iter {
             let inner_start_from = match prev_seg_res {
@@ -502,17 +229,20 @@ fn resolve_path<'ast, R: SomeResolver>(
                 Res::Err => unreachable!(),
             };
 
-            let cur_seg_res =
-                resolve_ident_in_item(resolver, cur_seg.ident, inner_start_from, cur_seg.id);
+            let cur_seg_res = resolve_ident_in_item(
+                resolver,
+                cur_seg.ident,
+                GlobalSGodeId(inner_start_from, SGNodeId::ROOT),
+                cur_seg.id,
+            );
             prev_seg_res = resolver.record_res(cur_seg.id, cur_seg_res)?;
-            resolve_gen_args(resolver, &cur_seg.args, start_from);
         }
 
         Ok(prev_seg_res)
     })();
 
     match result {
-        Ok(res) => Ok(res),
+        Ok(_) => resolver.record_res(path_id, result),
         Err(()) => {
             for seg in seg_iter {
                 let _ = resolver.record_res(seg.id, Err(()));
@@ -522,29 +252,15 @@ fn resolve_path<'ast, R: SomeResolver>(
     }
 }
 
-fn resolve_gen_args<'ast, R: SomeResolver>(
-    resolver: &mut R,
-    args: &ast::GenArgs<'_>,
-    start_from: (NodeId, SGNodeId),
-) {
-    for arg in args.0 {
-        match arg {
-            ast::GenArg::Ty(ty) => {
-                let _ = resolve_ty(resolver, ty, start_from);
-            }
-        }
-    }
-}
-
-fn resolve_ident_in_item<'ast, R: SomeResolver>(
+fn resolve_ident_in_item<'ast, R: SomeResolver<PathResQuery<'ast>>>(
     resolver: &mut R,
     ident: &str,
-    start_from: NodeId,
+    start_from: GlobalSGodeId,
     cause_expr: NodeId,
 ) -> Result<Res<NodeId>, ()> {
-    let query_result = resolver.query(NameResQuery {
+    let query_result = resolver.query(SGQuery {
         name: ident.to_owned(),
-        start: (start_from, SGNodeId::ROOT),
+        start: start_from,
         edge_filter: vec![EdgeKind::Defines],
     });
     match query_result {
@@ -558,7 +274,7 @@ fn resolve_ident_in_item<'ast, R: SomeResolver>(
                 Some(_) => {
                     return resolver.error(ResolutionError::UnresolvedAssociatedIdentifier {
                         ident: ident.to_owned(),
-                        in_scope: start_from,
+                        in_scope: start_from.0,
                         cause_expr,
                     })
                 }
@@ -567,20 +283,20 @@ fn resolve_ident_in_item<'ast, R: SomeResolver>(
         Err(()) => {
             return resolver.error(ResolutionError::UnresolvedAssociatedIdentifier {
                 ident: ident.to_owned(),
-                in_scope: start_from,
+                in_scope: start_from.0,
                 cause_expr,
             })
         }
     }
 }
 
-fn resolve_ident_lexically<'ast, R: SomeResolver>(
+fn resolve_ident_lexically<'ast, R: SomeResolver<PathResQuery<'ast>>>(
     resolver: &mut R,
     ident: &str,
-    start_from: (NodeId, SGNodeId),
+    start_from: GlobalSGodeId,
     cause_expr: NodeId,
 ) -> Result<Res<NodeId>, ()> {
-    let query_result = resolver.query(NameResQuery {
+    let query_result = resolver.query(SGQuery {
         name: ident.to_owned(),
         start: start_from,
         edge_filter: vec![EdgeKind::Defines, EdgeKind::Lexical],
@@ -611,65 +327,73 @@ fn resolve_ident_lexically<'ast, R: SomeResolver>(
     }
 }
 
-pub trait SomeResolver {
-    type Deferred;
-    fn record_res(&mut self, id: NodeId, res: Result<Res<NodeId>, ()>) -> Result<Res<NodeId>, ()>;
-    fn error(&self, e: ResolutionError) -> Result<Res<NodeId>, ()>;
-    fn query(&mut self, query: NameResQuery) -> Result<HashMap<usize, Vec<Res<NodeId>>>, ()>;
-}
+fn resolve_ident_as_field<'ast, R: SomeResolver<PathResQuery<'ast>>>(
+    resolver: &mut R,
+    ident: &str,
+    start_from: GlobalSGodeId,
+    cause_expr: NodeId,
+) -> Result<Res<NodeId>, ()> {
+    let query_result = resolver.query(SGQuery {
+        name: ident.to_owned(),
+        start: start_from,
+        edge_filter: vec![EdgeKind::Field],
+    });
 
-impl<'ast, 'sg> SomeResolver for Resolver<'ast, 'sg> {
-    type Deferred = DeferredRes<'ast>;
-
-    fn record_res(&mut self, id: NodeId, res: Result<Res<NodeId>, ()>) -> Result<Res<NodeId>, ()> {
-        let new_res = match res {
-            Err(()) => Res::Err,
-            Ok(res) => res,
-        };
-
-        if let Some(_) = self.resolutions.insert(id, new_res) {
-            panic!("resolution recorded twice for `{id:?}`");
+    match query_result {
+        Ok(candidates) => {
+            let mut cand_iter = candidates
+                .values()
+                .flat_map(|resolutions| resolutions.into_iter());
+            let cand = cand_iter.next().unwrap();
+            match cand_iter.next() {
+                None => Ok(*cand),
+                Some(_) => {
+                    return resolver.error(ResolutionError::UnresolvedField {
+                        ident: ident.to_owned(),
+                        on_res: start_from.0,
+                        cause_expr,
+                    })
+                }
+            }
         }
-
-        res
-    }
-
-    fn error(&self, e: ResolutionError) -> Result<Res<NodeId>, ()> {
-        self.errors.borrow_mut().push(e);
-
-        Err(())
-    }
-
-    fn query(&mut self, query: NameResQuery) -> Result<HashMap<usize, Vec<Res<NodeId>>>, ()> {
-        ScopeGraph::query(&self.scopegraphs, query, resolve_deferred_res)
+        Err(()) => {
+            return resolver.error(ResolutionError::UnresolvedField {
+                ident: ident.to_owned(),
+                on_res: start_from.0,
+                cause_expr,
+            })
+        }
     }
 }
 
 pub fn build_graph_for_crate<'ast>(
-    root_mod: &Module<'ast>,
-) -> HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>> {
+    root_mod: &'ast Module<'ast>,
+) -> (
+    HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>,
+    Vec<NameResQuery<'ast>>,
+) {
     let mut graphs = HashMap::new();
-    let sg = build_graph_for_mod(root_mod, &mut graphs);
-    graphs.insert(root_mod.id, sg);
-
+    let mut name_res_queries = vec![];
+    build_graph_for_mod(root_mod, &mut name_res_queries, &mut graphs);
     // println!("{}", graphviz_export(&graphs));
 
-    graphs
+    (graphs, name_res_queries)
 }
 
 fn build_graph_for_item<'ast>(
-    item: &Item<'ast>,
+    item: &'ast Item<'ast>,
+    name_res_queries: &mut Vec<NameResQuery<'ast>>,
     parent: NodeId,
-    graphs: &mut HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>>,
+    graphs: &mut HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>,
 ) {
-    let graph = match item {
-        Item::Mod(m) => build_graph_for_mod(m, graphs),
-        Item::Use(u) => build_graph_for_use(u, parent, graphs),
-        Item::TypeDef(ty) => build_graph_for_type_def(ty, parent, graphs),
-        Item::TypeAlias(ty) => build_graph_for_type_alias(ty, parent, graphs),
-        Item::Fn(f) => build_graph_for_fn(f, parent, graphs),
-        Item::Trait(tr) => build_graph_for_trait(tr, parent, graphs),
-        Item::Impl(i) => build_graph_for_impl(i, parent, graphs),
+    match item {
+        Item::Mod(m) => build_graph_for_mod(m, name_res_queries, graphs),
+        Item::Use(u) => build_graph_for_use(u, name_res_queries, parent, graphs),
+        Item::TypeDef(ty) => build_graph_for_type_def(ty, name_res_queries, parent, graphs),
+        Item::TypeAlias(ty) => build_graph_for_type_alias(ty, name_res_queries, parent, graphs),
+        Item::Fn(f) => build_graph_for_fn(f, name_res_queries, parent, graphs),
+        Item::Trait(tr) => build_graph_for_trait(tr, name_res_queries, parent, graphs),
+        Item::Impl(i) => build_graph_for_impl(i, name_res_queries, parent, graphs),
 
         Item::FieldDef(_) => {
             panic!("`build_graph` called on a `Item::FieldDef` instead of a `item::TypeDef`")
@@ -677,15 +401,14 @@ fn build_graph_for_item<'ast>(
         Item::VariantDef(_) => {
             panic!("`build_graph` called on a `Item::VariantDef` instead of `item::TypeDef`")
         }
-    };
-
-    graphs.insert(item.id(), graph);
+    }
 }
 
 fn build_graph_for_mod<'ast>(
-    module: &Module<'ast>,
-    graphs: &mut HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>>,
-) -> ScopeGraph<DeferredRes<'ast>> {
+    module: &'ast Module<'ast>,
+    name_res_queries: &mut Vec<NameResQuery<'ast>>,
+    graphs: &mut HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>,
+) {
     let mut graph = ScopeGraphBuilder::new(
         module.id,
         match module.name {
@@ -705,9 +428,10 @@ fn build_graph_for_mod<'ast>(
                         EdgeKind::Defines,
                         name.to_owned(),
                         if let Item::Use(u) = item {
-                            SGDefinition::Deferred(DeferredRes {
-                                start: u.id,
-                                path: &u.path,
+                            SGDefinition::Deferred(PathResQuery {
+                                in_sg: GlobalSGodeId(u.id, SGNodeId::ROOT),
+                                path: u.path,
+                                path_id: u.id,
                             })
                         } else {
                             SGDefinition::PreResolved(Res::Def(
@@ -735,7 +459,7 @@ fn build_graph_for_mod<'ast>(
     if module.name != "" {
         make_lexical_only_scope(
             &mut graph,
-            mod_id,
+            GlobalSGodeId(module.id, mod_id),
             vec![(
                 EdgeKind::Defines,
                 module.name.to_owned(),
@@ -746,17 +470,19 @@ fn build_graph_for_mod<'ast>(
     }
 
     for item in module.items {
-        build_graph_for_item(item, module.id, graphs);
+        build_graph_for_item(item, name_res_queries, module.id, graphs);
     }
 
-    graph.build(vec![], HashMap::new())
+    let sg = graph.build();
+    graphs.insert(module.id, sg);
 }
 
 fn build_graph_for_use<'ast>(
-    use_def: &ast::Use<'ast>,
+    use_def: &'ast ast::Use<'ast>,
+    _name_res_queries: &mut Vec<NameResQuery<'ast>>,
     parent: NodeId,
-    graphs: &mut HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>>,
-) -> ScopeGraph<DeferredRes<'ast>> {
+    graphs: &mut HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>,
+) {
     let mut graph = ScopeGraphBuilder::new(use_def.id, "use_".to_owned() + use_def.name);
 
     graph.add_node(
@@ -764,29 +490,43 @@ fn build_graph_for_use<'ast>(
         vec![(EdgeKind::Lexical, EdgeTarget::Global(parent))],
     );
 
-    graph.build(vec![], HashMap::new())
+    let sg = graph.build();
+    graphs.insert(use_def.id, sg);
 }
 
 fn build_graph_for_type_def<'ast>(
-    type_def: &TypeDef<'ast>,
+    type_def: &'ast TypeDef<'ast>,
+    name_res_queries: &mut Vec<NameResQuery<'ast>>,
     parent: NodeId,
-    graphs: &mut HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>>,
-) -> ScopeGraph<DeferredRes<'ast>> {
+    graphs: &mut HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>,
+) {
     let mut graph = ScopeGraphBuilder::new(type_def.id, type_def.name.to_owned());
 
     let adt_node = graph.add_node(
         vec![],
         vec![(EdgeKind::Lexical, EdgeTarget::Global(parent))],
     );
+    let adt_global_node = GlobalSGodeId(type_def.id, adt_node);
 
-    introduce_generic_parameters(&mut graph, adt_node, type_def.generics);
-    let bounds_subgraph = introduce_bounds(&mut graph, adt_node, &type_def.bounds);
+    scope_for_generics(
+        &mut graph,
+        &type_def.generics,
+        adt_global_node,
+        name_res_queries,
+    );
+    scope_for_bounds(
+        &mut graph,
+        &type_def.bounds,
+        adt_global_node,
+        name_res_queries,
+    );
 
     fn build_graph_for_variant<'ast>(
-        graph: &mut ScopeGraphBuilder<DeferredRes<'ast>>,
+        graph: &mut ScopeGraphBuilder<PathResQuery<'ast>>,
+        name_res_queries: &mut Vec<NameResQuery<'ast>>,
         graph_id: NodeId,
         variant: &ast::VariantDef<'ast>,
-        graphs: &mut HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>>,
+        graphs: &mut HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>,
     ) {
         for field in variant.field_defs {
             graph.get_node_mut(SGNodeId::ROOT).defines.push((
@@ -797,9 +537,7 @@ fn build_graph_for_type_def<'ast>(
         }
 
         for type_def in variant.type_defs {
-            let nested_graph = build_graph_for_type_def(type_def, graph_id, graphs);
-            graphs.insert(type_def.id, nested_graph);
-
+            build_graph_for_type_def(type_def, name_res_queries, graph_id, graphs);
             graph.get_node_mut(SGNodeId::ROOT).defines.push((
                 EdgeKind::Defines,
                 type_def.name.to_owned(),
@@ -809,7 +547,13 @@ fn build_graph_for_type_def<'ast>(
     }
 
     match type_def.is_struct() {
-        true => build_graph_for_variant(&mut graph, type_def.id, type_def.variants[0], graphs),
+        true => build_graph_for_variant(
+            &mut graph,
+            name_res_queries,
+            type_def.id,
+            type_def.variants[0],
+            graphs,
+        ),
         false => {
             for variant in type_def.variants.iter() {
                 graph.get_node_mut(SGNodeId::ROOT).defines.push((
@@ -823,44 +567,66 @@ fn build_graph_for_type_def<'ast>(
                     vec![],
                     vec![(EdgeKind::Lexical, EdgeTarget::Global(type_def.id))],
                 );
-                build_graph_for_variant(&mut variant_graph, variant.id, variant, graphs);
-                graphs.insert(variant.id, variant_graph.build(vec![], HashMap::new()));
+                build_graph_for_variant(
+                    &mut variant_graph,
+                    name_res_queries,
+                    variant.id,
+                    variant,
+                    graphs,
+                );
+                graphs.insert(variant.id, variant_graph.build());
             }
         }
     };
 
-    graph.build(vec![], bounds_subgraph)
+    let sg = graph.build();
+    graphs.insert(type_def.id, sg);
 }
 
 fn build_graph_for_type_alias<'ast>(
-    type_alias: &TypeAlias<'ast>,
+    type_alias: &'ast TypeAlias<'ast>,
+    name_res_queries: &mut Vec<NameResQuery<'ast>>,
     parent: NodeId,
-    graphs: &mut HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>>,
-) -> ScopeGraph<DeferredRes<'ast>> {
+    graphs: &mut HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>,
+) {
     let mut graph = ScopeGraphBuilder::new(type_alias.id, type_alias.name.to_owned());
 
     let ty_node_id = graph.add_node(
         vec![],
         vec![(EdgeKind::Lexical, EdgeTarget::Global(parent))],
     );
+    let ty_node_global_id = GlobalSGodeId(type_alias.id, ty_node_id);
 
-    introduce_generic_parameters(&mut graph, ty_node_id, type_alias.generics);
-    let bounds_subgraph = introduce_bounds(&mut graph, ty_node_id, &type_alias.bounds);
+    scope_for_generics(
+        &mut graph,
+        &type_alias.generics,
+        ty_node_global_id,
+        name_res_queries,
+    );
+    scope_for_bounds(
+        &mut graph,
+        &type_alias.bounds,
+        ty_node_global_id,
+        name_res_queries,
+    );
 
-    graph.build(vec![], bounds_subgraph)
+    let sg = graph.build();
+    graphs.insert(type_alias.id, sg);
 }
 
 fn build_graph_for_fn<'ast>(
-    func: &ast::Fn<'ast>,
+    func: &'ast ast::Fn<'ast>,
+    name_res_queries: &mut Vec<NameResQuery<'ast>>,
     parent: NodeId,
-    graphs: &mut HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>>,
-) -> ScopeGraph<DeferredRes<'ast>> {
+    graphs: &mut HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>,
+) {
     let mut graph = ScopeGraphBuilder::new(func.id, func.name.to_owned());
 
     let fn_id = graph.add_node(
         vec![],
         vec![(EdgeKind::Lexical, EdgeTarget::Global(parent))],
     );
+    let fn_global_id = GlobalSGodeId(func.id, fn_id);
 
     let generics_and_params = func
         .generics
@@ -882,40 +648,48 @@ fn build_graph_for_fn<'ast>(
         }))
         .collect::<Vec<_>>();
 
-    if generics_and_params.len() > 0 {
-        make_lexical_only_scope(&mut graph, fn_id, generics_and_params, vec![]);
+    make_lexical_only_scope(&mut graph, fn_global_id, generics_and_params, vec![]);
+    scope_for_bounds(&mut graph, &func.bounds, fn_global_id, name_res_queries);
+
+    if let Some(term) = func.body {
+        scope_for_term(&mut graph, term, name_res_queries, fn_global_id);
     }
-    let bounds_subgraph = introduce_bounds(&mut graph, fn_id, &func.bounds);
 
-    let source_to_sg_node = func
-        .body
-        .map(|expr| scope_for_expr(&mut graph, expr, func.id, fn_id))
-        .unwrap_or(vec![]);
-
-    graph.build(source_to_sg_node, bounds_subgraph)
+    let sg = graph.build();
+    graphs.insert(func.id, sg);
 }
 
 fn build_graph_for_trait<'ast>(
-    trait_def: &Trait<'ast>,
+    trait_def: &'ast Trait<'ast>,
+    name_res_queries: &mut Vec<NameResQuery<'ast>>,
     parent: NodeId,
-    graphs: &mut HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>>,
-) -> ScopeGraph<DeferredRes<'ast>> {
+    graphs: &mut HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>,
+) {
     let mut graph = ScopeGraphBuilder::new(trait_def.id, trait_def.ident.to_owned());
 
     let trait_node = graph.add_node(
         vec![],
         vec![(EdgeKind::Lexical, EdgeTarget::Global(parent))],
     );
+    let trait_global_node = GlobalSGodeId(trait_def.id, trait_node);
 
-    introduce_generic_parameters(&mut graph, trait_node, trait_def.generics);
-    let bounds_subgraph = introduce_bounds(&mut graph, trait_node, &trait_def.bounds);
+    scope_for_generics(
+        &mut graph,
+        &trait_def.generics,
+        trait_global_node,
+        name_res_queries,
+    );
+    scope_for_bounds(
+        &mut graph,
+        &trait_def.bounds,
+        trait_global_node,
+        name_res_queries,
+    );
 
     for assoc_item in trait_def.assoc_items {
         match assoc_item {
             ast::AssocItem::Fn(func) => {
-                let func_graph = build_graph_for_fn(func, trait_def.id, graphs);
-                graphs.insert(func.id, func_graph);
-
+                build_graph_for_fn(func, name_res_queries, trait_def.id, graphs);
                 graph.get_node_mut(trait_node).defines.push((
                     EdgeKind::Defines,
                     func.name.to_owned(),
@@ -923,9 +697,7 @@ fn build_graph_for_trait<'ast>(
                 ));
             }
             ast::AssocItem::Type(alias) => {
-                let alias_graph = build_graph_for_type_alias(alias, trait_def.id, graphs);
-                graphs.insert(alias.id, alias_graph);
-
+                build_graph_for_type_alias(alias, name_res_queries, trait_def.id, graphs);
                 graph.get_node_mut(trait_node).defines.push((
                     EdgeKind::Defines,
                     alias.name.to_owned(),
@@ -935,30 +707,41 @@ fn build_graph_for_trait<'ast>(
         }
     }
 
-    graph.build(vec![], bounds_subgraph)
+    let sg = graph.build();
+    graphs.insert(trait_def.id, sg);
 }
 
 fn build_graph_for_impl<'ast>(
-    impl_def: &Impl<'ast>,
+    impl_def: &'ast Impl<'ast>,
+    name_res_queries: &mut Vec<NameResQuery<'ast>>,
     parent: NodeId,
-    graphs: &mut HashMap<NodeId, ScopeGraph<DeferredRes<'ast>>>,
-) -> ScopeGraph<DeferredRes<'ast>> {
+    graphs: &mut HashMap<NodeId, ScopeGraph<PathResQuery<'ast>>>,
+) {
     let mut graph = ScopeGraphBuilder::new(impl_def.id, "impl".to_owned());
 
     let impl_node = graph.add_node(
         vec![],
         vec![(EdgeKind::Lexical, EdgeTarget::Global(parent))],
     );
+    let impl_global_node = GlobalSGodeId(impl_def.id, impl_node);
 
-    introduce_generic_parameters(&mut graph, impl_node, impl_def.generics);
-    let bounds_subgraph = introduce_bounds(&mut graph, impl_node, &impl_def.bounds);
+    scope_for_generics(
+        &mut graph,
+        &impl_def.generics,
+        impl_global_node,
+        name_res_queries,
+    );
+    scope_for_bounds(
+        &mut graph,
+        &impl_def.bounds,
+        impl_global_node,
+        name_res_queries,
+    );
 
     for assoc_item in impl_def.assoc_items {
         match assoc_item {
             ast::AssocItem::Fn(func) => {
-                let func_graph = build_graph_for_fn(func, impl_def.id, graphs);
-                graphs.insert(func.id, func_graph);
-
+                build_graph_for_fn(func, name_res_queries, impl_def.id, graphs);
                 graph.get_node_mut(impl_node).defines.push((
                     EdgeKind::Defines,
                     func.name.to_owned(),
@@ -966,9 +749,7 @@ fn build_graph_for_impl<'ast>(
                 ));
             }
             ast::AssocItem::Type(alias) => {
-                let alias_graph = build_graph_for_type_alias(alias, impl_def.id, graphs);
-                graphs.insert(alias.id, alias_graph);
-
+                build_graph_for_type_alias(alias, name_res_queries, impl_def.id, graphs);
                 graph.get_node_mut(impl_node).defines.push((
                     EdgeKind::Defines,
                     alias.name.to_owned(),
@@ -978,18 +759,19 @@ fn build_graph_for_impl<'ast>(
         }
     }
 
-    graph.build(vec![], bounds_subgraph)
+    let sg = graph.build();
+    graphs.insert(impl_def.id, sg);
 }
 
 fn make_lexical_only_scope<'ast>(
-    builder: &mut ScopeGraphBuilder<DeferredRes<'ast>>,
-    for_node: SGNodeId,
-    defines: Vec<(EdgeKind, String, SGDefinition<DeferredRes<'ast>>)>,
+    builder: &mut ScopeGraphBuilder<PathResQuery<'ast>>,
+    current_scope: GlobalSGodeId,
+    defines: Vec<(EdgeKind, String, SGDefinition<PathResQuery<'ast>>)>,
     edges: Vec<(EdgeKind, EdgeTarget)>,
 ) -> SGNodeId {
     let lexical_self_id = builder.add_node(defines, edges);
     builder
-        .get_node_mut(for_node)
+        .get_node_mut(current_scope.1)
         .edges
         .push((EdgeKind::Lexical, EdgeTarget::Intragraph(lexical_self_id)));
     lexical_self_id
@@ -999,18 +781,15 @@ fn make_lexical_only_scope<'ast>(
 /// Returns the `SGNodeId` that the parameters are defined on.
 ///
 /// Does not create a scope if there are no generics introduced.
-fn introduce_generic_parameters<'ast>(
-    builder: &mut ScopeGraphBuilder<DeferredRes<'ast>>,
-    for_node: SGNodeId,
-    generics: ast::Generics,
-) -> Option<SGNodeId> {
-    if generics.params.len() == 0 {
-        return None;
-    }
-
-    Some(make_lexical_only_scope(
-        builder,
-        for_node,
+fn scope_for_generics<'ast>(
+    graph: &mut ScopeGraphBuilder<PathResQuery<'ast>>,
+    generics: &'ast ast::Generics<'ast>,
+    current_scope: GlobalSGodeId,
+    _name_res_queries: &mut Vec<NameResQuery<'ast>>,
+) {
+    make_lexical_only_scope(
+        graph,
+        current_scope,
         generics
             .params
             .iter()
@@ -1023,19 +802,29 @@ fn introduce_generic_parameters<'ast>(
             })
             .collect(),
         vec![],
-    ))
+    );
 }
 
-fn introduce_bounds<'ast>(
-    builder: &mut ScopeGraphBuilder<DeferredRes<'ast>>,
-    on_node: SGNodeId,
+fn scope_for_bounds<'ast>(
+    graph: &mut ScopeGraphBuilder<PathResQuery<'ast>>,
     bounds: &ast::Bounds<'ast>,
-) -> HashMap<NodeId, SGNodeId> {
-    let mut map = HashMap::new();
-
+    current_scope: GlobalSGodeId,
+    name_res_queries: &mut Vec<NameResQuery<'ast>>,
+) {
     for clause in bounds.clauses {
-        if let ast::ClauseKind::Bound(binder) = clause.kind {
-            let sg_node = builder.add_node(
+        scope_for_clause(graph, clause, name_res_queries, current_scope);
+    }
+}
+
+fn scope_for_clause<'ast>(
+    graph: &mut ScopeGraphBuilder<PathResQuery<'ast>>,
+    clause: &'ast ast::Clause<'ast>,
+    name_res_queries: &mut Vec<NameResQuery<'ast>>,
+    current_scope: GlobalSGodeId,
+) {
+    match &clause.kind {
+        ast::ClauseKind::Bound(binder) => {
+            let new_scope = graph.add_node(
                 binder
                     .vars
                     .iter()
@@ -1047,103 +836,111 @@ fn introduce_bounds<'ast>(
                         )
                     })
                     .collect(),
-                vec![(EdgeKind::Lexical, EdgeTarget::Intragraph(on_node))],
+                vec![(EdgeKind::Lexical, EdgeTarget::Intragraph(current_scope.1))],
             );
-            map.insert(clause.id, sg_node);
-        };
-    }
-
-    map
-}
-
-fn scope_for_expr<'ast>(
-    graph: &mut ScopeGraphBuilder<DeferredRes<'ast>>,
-    expr: &ast::Expr<'ast>,
-    root_sg_id: NodeId,
-    root_sg_node: SGNodeId,
-) -> Vec<(NodeId, SGNodeId)> {
-    let mut scope_swaps = vec![(root_sg_id, root_sg_node)];
-    scope_for_expr_recur(graph, expr, &mut scope_swaps);
-    scope_swaps
-}
-
-/// Optionally returns whether any following expressions should be parented
-/// under a new scope. Used for `let` statements which require all following
-/// expressions to be able to name their bindings.
-fn scope_for_expr_recur<'ast>(
-    graph: &mut ScopeGraphBuilder<DeferredRes<'ast>>,
-    expr: &ast::Expr<'ast>,
-    scope_swaps: &mut Vec<(NodeId, SGNodeId)>,
-) -> Option<SGNodeId> {
-    fn reset_scope_to(
-        scope_swaps: &mut Vec<(NodeId, SGNodeId)>,
-        scope: SGNodeId,
-        for_expr: NodeId,
-    ) {
-        if scope_swaps.last().unwrap().1 != scope {
-            scope_swaps.push((for_expr, scope));
+            scope_for_clause(
+                graph,
+                binder.value,
+                name_res_queries,
+                current_scope.map_sg_id(new_scope),
+            );
+        }
+        ast::ClauseKind::AliasEq(lhs, rhs) => {
+            scope_for_term(graph, lhs, name_res_queries, current_scope);
+            scope_for_term(graph, rhs, name_res_queries, current_scope);
+        }
+        ast::ClauseKind::Trait(path) => {
+            scope_for_path(graph, *path, clause.id, name_res_queries, current_scope);
         }
     }
+}
 
-    let parent_scope = scope_swaps.last().unwrap().1;
-
-    match expr.kind {
-        ast::ExprKind::Let {
+fn scope_for_term<'ast>(
+    graph: &mut ScopeGraphBuilder<PathResQuery<'ast>>,
+    term: &'ast ast::Term<'ast>,
+    name_res_queries: &mut Vec<NameResQuery<'ast>>,
+    current_scope: GlobalSGodeId,
+) {
+    match term.kind {
+        ast::TermKind::Let {
             param: binding,
             init,
             cont,
             sp: _,
         } => {
             // ignore returned scope, rhs of let statement ends after evaluating it
-            scope_for_expr_recur(graph, init, scope_swaps);
+            scope_for_term(graph, init, name_res_queries, current_scope);
             let new_scope = graph.add_node(
                 vec![(
                     EdgeKind::Defines,
                     binding.ident.to_owned(),
                     SGDefinition::PreResolved(Res::Local(binding.id)),
                 )],
-                vec![(EdgeKind::Lexical, EdgeTarget::Intragraph(parent_scope))],
+                vec![(EdgeKind::Lexical, EdgeTarget::Intragraph(current_scope.1))],
             );
-            reset_scope_to(scope_swaps, new_scope, init.id);
-            scope_for_expr_recur(graph, cont, scope_swaps);
-            reset_scope_to(scope_swaps, parent_scope, expr.id);
-
-            None
+            scope_for_term(
+                graph,
+                cont,
+                name_res_queries,
+                current_scope.map_sg_id(new_scope),
+            );
         }
-        ast::ExprKind::BinOp(_, lhs, rhs, _) => {
-            scope_for_expr_recur(graph, lhs, scope_swaps);
-            reset_scope_to(scope_swaps, parent_scope, lhs.id);
-            scope_for_expr_recur(graph, rhs, scope_swaps);
-            reset_scope_to(scope_swaps, parent_scope, rhs.id);
-            None
+        ast::TermKind::BinOp(_, lhs, rhs, _) => {
+            scope_for_term(graph, lhs, name_res_queries, current_scope);
+            scope_for_term(graph, rhs, name_res_queries, current_scope);
         }
-        ast::ExprKind::UnOp(_, expr, _) => {
-            scope_for_expr_recur(graph, expr, scope_swaps);
-            reset_scope_to(scope_swaps, parent_scope, expr.id);
-            None
+        ast::TermKind::UnOp(_, expr, _) => {
+            scope_for_term(graph, expr, name_res_queries, current_scope);
         }
-        ast::ExprKind::FnCall(call) => {
-            scope_for_expr_recur(graph, call.func, scope_swaps);
-            reset_scope_to(scope_swaps, parent_scope, call.func.id);
-
+        ast::TermKind::FnCall(call) => {
+            scope_for_term(graph, call.func, name_res_queries, current_scope);
             for arg in call.args {
-                scope_for_expr_recur(graph, arg, scope_swaps);
-                reset_scope_to(scope_swaps, parent_scope, arg.id);
+                scope_for_term(graph, arg, name_res_queries, current_scope);
             }
-            None
         }
-        ast::ExprKind::TypeInit(ty_init) => {
+        ast::TermKind::TypeInit(ty_init) => {
+            scope_for_path(
+                graph,
+                ty_init.path,
+                term.id,
+                name_res_queries,
+                current_scope,
+            );
+
             for field_init in ty_init.field_inits {
-                scope_for_expr_recur(graph, field_init.expr, scope_swaps);
-                reset_scope_to(scope_swaps, parent_scope, field_init.expr.id);
+                scope_for_term(graph, field_init.expr, name_res_queries, current_scope);
             }
-            None
         }
-        ast::ExprKind::FieldInit(_) => {
+        ast::TermKind::FieldInit(_) => {
             unreachable!("`FieldInit` is handled in the `TypeInit` arm")
         }
 
-        // path and lit exprs do not introduce bindings
-        ast::ExprKind::Path(_) | ast::ExprKind::Lit(_, _) => None,
+        ast::TermKind::Path(path) => {
+            scope_for_path(graph, path, term.id, name_res_queries, current_scope);
+        }
+
+        // infer and lit exprs do not introduce bindings or contain paths
+        ast::TermKind::Infer(_) | ast::TermKind::Lit(_, _) => (),
+    }
+}
+
+fn scope_for_path<'ast>(
+    graph: &mut ScopeGraphBuilder<PathResQuery<'ast>>,
+    path: ast::Path<'ast>,
+    path_id: NodeId,
+    name_res_queries: &mut Vec<NameResQuery<'ast>>,
+    current_scope: GlobalSGodeId,
+) {
+    name_res_queries.push(NameResQuery::Path(PathResQuery {
+        path_id,
+        path,
+        in_sg: current_scope,
+    }));
+
+    for seg in path.segments {
+        seg.args
+            .0
+            .iter()
+            .map(|term| scope_for_term(graph, term, name_res_queries, current_scope));
     }
 }

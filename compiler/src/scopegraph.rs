@@ -6,35 +6,29 @@ pub struct ScopeGraph<D> {
     id: NodeId,
     name: String,
     nodes: Vec<SGNode<D>>,
-
-    // When walking the ast, upon reaching `NodeId`, after evaluating it,
-    // `SGNodeId` should be used for all name res queries.
-    source_to_sg_node: Vec<(NodeId, SGNodeId)>,
-    // A map of `NodeId` -> `SGNodeId` where `NodeId` is a `ClauseKind::Bound`'s id.
-    bound_clause_to_sg_node: HashMap<NodeId, SGNodeId>,
-}
-impl<D> ScopeGraph<D> {
-    pub fn source_to_sg_node(&self) -> &[(NodeId, SGNodeId)] {
-        &self.source_to_sg_node
-    }
-
-    pub fn bound_clause_to_sg_node(&self, clause: NodeId) -> SGNodeId {
-        self.bound_clause_to_sg_node[&clause]
-    }
 }
 impl<D: Clone> ScopeGraph<D> {
     pub fn query<'sg>(
         forest: &'sg HashMap<NodeId, ScopeGraph<D>>,
-        query: NameResQuery,
-        resolve_deferred: fn(&mut NameResQueryEvaluator<'sg, D>, D) -> Res<NodeId>,
+        query: SGQuery,
+        resolve_deferred: fn(&mut SGQueryEvaluator<'sg, D>, D) -> Res<NodeId>,
     ) -> Result<HashMap<usize, Vec<Res<NodeId>>>, ()> {
-        let mut evaluator = NameResQueryEvaluator {
+        let mut evaluator = SGQueryEvaluator {
             query_stack: vec![],
             scopegraphs: forest,
             resolve_deferred,
         };
 
         evaluator.nested_query(query)
+    }
+}
+
+#[derive(Debug, Hash, Copy, Clone, Eq, PartialEq)]
+pub struct GlobalSGodeId(pub NodeId, pub SGNodeId);
+
+impl GlobalSGodeId {
+    pub fn map_sg_id(self, new_id: SGNodeId) -> Self {
+        Self(self.0, new_id)
     }
 }
 
@@ -67,19 +61,19 @@ pub enum EdgeKind {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub struct NameResQuery {
+pub struct SGQuery {
     pub name: String,
-    pub start: (NodeId, SGNodeId),
+    pub start: GlobalSGodeId,
     pub edge_filter: Vec<EdgeKind>,
 }
 
-pub struct NameResQueryEvaluator<'sg, D> {
-    query_stack: Vec<NameResQuery>,
+pub struct SGQueryEvaluator<'sg, D> {
+    query_stack: Vec<SGQuery>,
     scopegraphs: &'sg HashMap<NodeId, ScopeGraph<D>>,
-    resolve_deferred: fn(&mut NameResQueryEvaluator<'sg, D>, D) -> Res<NodeId>,
+    resolve_deferred: fn(&mut SGQueryEvaluator<'sg, D>, D) -> Res<NodeId>,
 }
 
-impl<'sg, D: Clone> crate::resolve::SomeResolver for NameResQueryEvaluator<'sg, D> {
+impl<'sg, D: Clone> crate::resolve::SomeResolver<D> for SGQueryEvaluator<'sg, D> {
     type Deferred = D;
 
     fn record_res(&mut self, _id: NodeId, res: Result<Res<NodeId>, ()>) -> Result<Res<NodeId>, ()> {
@@ -90,15 +84,12 @@ impl<'sg, D: Clone> crate::resolve::SomeResolver for NameResQueryEvaluator<'sg, 
         Err(())
     }
 
-    fn query(&mut self, query: NameResQuery) -> Result<HashMap<usize, Vec<Res<NodeId>>>, ()> {
+    fn query(&mut self, query: SGQuery) -> Result<HashMap<usize, Vec<Res<NodeId>>>, ()> {
         self.nested_query(query)
     }
 }
-impl<D: Clone> NameResQueryEvaluator<'_, D> {
-    pub fn nested_query(
-        &mut self,
-        query: NameResQuery,
-    ) -> Result<HashMap<usize, Vec<Res<NodeId>>>, ()> {
+impl<D: Clone> SGQueryEvaluator<'_, D> {
+    pub fn nested_query(&mut self, query: SGQuery) -> Result<HashMap<usize, Vec<Res<NodeId>>>, ()> {
         if let Some(_) = self
             .query_stack
             .iter()
@@ -117,14 +108,14 @@ impl<D: Clone> NameResQueryEvaluator<'_, D> {
     fn compute_query(
         &mut self,
         for_name: String,
-        start: (NodeId, SGNodeId),
+        start: GlobalSGodeId,
         edge_filter: Vec<EdgeKind>,
     ) -> Result<HashMap<usize, Vec<Res<NodeId>>>, ()> {
         let mut visited_nodes = HashSet::new();
         let mut work_list = vec![(start, 0_usize)];
         let mut candidates = HashMap::<usize, Vec<Res<NodeId>>>::new();
 
-        while let Some(((graph_id, node_id), cur_depth)) = work_list.pop() {
+        while let Some((GlobalSGodeId(graph_id, node_id), cur_depth)) = work_list.pop() {
             if visited_nodes.contains(&(graph_id, node_id)) {
                 continue;
             }
@@ -136,9 +127,11 @@ impl<D: Clone> NameResQueryEvaluator<'_, D> {
                     .iter()
                     .any(|edge| test_edge == edge)
                     .then(|| match target {
-                        EdgeTarget::Intragraph(node_id) => ((graph_id, *node_id), cur_depth + 1),
+                        EdgeTarget::Intragraph(node_id) => {
+                            (GlobalSGodeId(graph_id, *node_id), cur_depth + 1)
+                        }
                         EdgeTarget::Global(graph_id) => {
-                            ((*graph_id, SGNodeId::ROOT), cur_depth + 1)
+                            (GlobalSGodeId(*graph_id, SGNodeId::ROOT), cur_depth + 1)
                         }
                     })
             }));
@@ -209,11 +202,7 @@ impl<D> ScopeGraphBuilder<D> {
         self.wip_nodes.get_mut(id.0).unwrap()
     }
 
-    pub fn build(
-        self,
-        source_to_sg_node: Vec<(NodeId, SGNodeId)>,
-        bound_clause_to_sg_node: HashMap<NodeId, SGNodeId>,
-    ) -> ScopeGraph<D> {
+    pub fn build(self) -> ScopeGraph<D> {
         ScopeGraph {
             name: self.name,
             id: self.id,
@@ -225,8 +214,6 @@ impl<D> ScopeGraphBuilder<D> {
                     edges: wip_sgnode.edges,
                 })
                 .collect(),
-            source_to_sg_node,
-            bound_clause_to_sg_node,
         }
     }
 }
